@@ -38,7 +38,11 @@ Output contract (strict):
 
 const ILLUSTRATIONS_ADDENDUM = `
 
-Illustrations (available): you may embed AI-generated images inside the artifact. Write an <img> tag whose src is exactly "/api/genimage?prompt=" followed by a URL-encoded, richly detailed visual description (subject, style, palette, lighting — consistent with the artifact's design). Optionally append "&size=wide" or "&size=tall" for banners and portraits. This same-origin endpoint is the one exception to the no-external-requests rule. Use at most 3 generated images per artifact, only where they genuinely elevate it. Each takes several seconds to load: always set explicit dimensions or CSS sizing plus a background-color placeholder so layout holds, give every image alt text, and design the page to work even if they never load.`;
+Illustrations (available): you can embed AI-generated images inside the artifact. Write an <img> tag whose src is exactly "/api/genimage?prompt=" followed by a URL-encoded, richly detailed visual description (subject, style, palette, lighting — consistent with the artifact's design). Optionally append "&size=wide" or "&size=tall" for banners and portraits. This same-origin endpoint is the one exception to the no-external-requests rule.
+
+Reach for generated images whenever they are the best visual option: hero art, scene illustrations for adventure passages, character portraits, quiz-question visuals, slide backdrops, report figures with a photographic or painterly quality. Prefer them over laboriously hand-drawing complex imagery in SVG — save inline SVG/CSS for icons, charts, and geometric decoration where it excels. Give each image a distinct, specific prompt in a consistent art style so the artifact feels art-directed rather than clip-arted.
+
+Each image takes several seconds to generate on first load: always set explicit dimensions or CSS sizing plus a background-color placeholder so layout holds, give every image alt text, and design the page to work even if they never load.`;
 
 const IMAGE_SWITCH_ADDENDUM = `
 
