@@ -61,7 +61,16 @@ function render() {
   contentLayer.innerHTML = "";
 
   if (three) {
-    window.Stage3D.setBlobs(blobs.map((b) => ({ id: b.id, x: b.x, y: b.y, r: b.r, color: b.color })));
+    window.Stage3D.setBlobs(
+      blobs.map((b) => ({
+        id: b.id,
+        x: b.x,
+        y: b.y,
+        r: b.r,
+        color: b.color,
+        dataUrl: b.kind === "image" ? b.dataUrl : null,
+      }))
+    );
   }
 
   for (const b of blobs) {
@@ -81,11 +90,14 @@ function render() {
       el.style.background = `radial-gradient(circle, ${b.color}55 0%, ${b.color}22 62%, transparent 74%)`;
     }
     if (b.kind === "image") {
-      const img = document.createElement("img");
-      img.src = b.dataUrl;
-      img.alt = b.name || "ingredient image";
-      img.draggable = false;
-      el.appendChild(img);
+      if (!three) {
+        // 2D fallback shows the thumbnail; in 3D the goo surface IS the image
+        const img = document.createElement("img");
+        img.src = b.dataUrl;
+        img.alt = b.name || "ingredient image";
+        img.draggable = false;
+        el.appendChild(img);
+      }
     } else if (b.kind === "artifact") {
       const span = document.createElement("span");
       span.className = "blob-text blob-artifact-label";
