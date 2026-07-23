@@ -1,0 +1,21 @@
+{
+  "name": "fuse-metaball-canvas",
+  "version": "0.1.0",
+  "description": "Drop up to 5 ingredients (text or images) onto a gooey metaball canvas, size them for influence, and fuse them into an interactive HTML artifact with Claude.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.74.0",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "playwright": "^1.61.1"
+  }
+}

@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fuse — metaball mixer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Gooey filter used by the metaball layer -->
+  <svg class="goo-defs" aria-hidden="true">
+    <defs>
+      <filter id="goo">
+        <feGaussianBlur in="SourceGraphic" stdDeviation="14" result="blur" />
+        <feColorMatrix in="blur" mode="matrix"
+          values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 24 -11" result="goo" />
+        <feComposite in="SourceGraphic" in2="goo" operator="atop" />
+      </filter>
+    </defs>
+  </svg>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-blobs" aria-hidden="true"><i></i><i></i><i></i></span>
+      Fuse
+    </div>
+    <div class="hint" id="hint">
+      Drop images or add text · drag to arrange · scroll on a blob to grow its influence
+    </div>
+    <div class="counter"><span id="item-count">0</span>/5</div>
+  </header>
+
+  <main id="stage" aria-label="Ingredient canvas">
+    <div id="goo-layer"></div>
+    <div id="content-layer"></div>
+
+    <div id="empty-state">
+      <p>Your canvas is empty.</p>
+      <p>Add up to <strong>5 ingredients</strong> — words, phrases, pictures — then fuse them into something new.</p>
+    </div>
+
+    <div id="drop-veil">Drop images to add them</div>
+
+    <div id="blob-toolbar" hidden>
+      <button id="tb-grow" title="More influence">＋</button>
+      <button id="tb-shrink" title="Less influence">－</button>
+      <button id="tb-edit" title="Edit text">✎</button>
+      <button id="tb-delete" title="Remove">✕</button>
+    </div>
+
+    <form id="text-entry" hidden>
+      <input id="text-entry-input" type="text" maxlength="300"
+             placeholder="a word, a vibe, a phrase…" autocomplete="off" />
+    </form>
+  </main>
+
+  <footer class="controlbar">
+    <div class="adders">
+      <button id="add-text" class="chip-btn">＋ Text</button>
+      <button id="add-image" class="chip-btn">＋ Image</button>
+      <input id="file-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
+    </div>
+
+    <div class="directive-wrap">
+      <input id="directive" type="text" maxlength="500" autocomplete="off"
+             placeholder="make this into… (e.g. a retro arcade game)" />
+      <div class="output-types" role="radiogroup" aria-label="Artifact type">
+        <button class="otype selected" data-type="auto">Auto</button>
+        <button class="otype" data-type="report">Report</button>
+        <button class="otype" data-type="game">Game</button>
+        <button class="otype" data-type="quiz">Quiz</button>
+        <button class="otype" data-type="slide deck">Slides</button>
+        <button class="otype" data-type="choose-your-own-adventure">Adventure</button>
+      </div>
+    </div>
+
+    <button id="fuse-btn" disabled>Fuse</button>
+  </footer>
+
+  <section id="result-panel" hidden>
+    <header class="result-head">
+      <div class="result-title">
+        <strong id="result-status">Fusing…</strong>
+        <span id="result-meta"></span>
+      </div>
+      <div class="result-actions">
+        <button id="result-download" hidden>Download .html</button>
+        <button id="result-close">Close</button>
+      </div>
+    </header>
+    <pre id="result-code" class="visible"></pre>
+    <iframe id="result-frame" sandbox="allow-scripts allow-popups" title="Fused artifact"></iframe>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>
