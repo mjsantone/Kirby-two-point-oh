@@ -5,7 +5,9 @@ const PORT = process.env.PORT || 3000;
 const MODEL = process.env.FUSE_MODEL || "claude-fable-5";
 const FALLBACK_MODEL = "claude-opus-4-8";
 const FALLBACK_BETA = "server-side-fallback-2026-06-01";
+const IMAGE_MODEL = process.env.IMAGE_MODEL || "gpt-image-2";
 const MAX_ITEMS = 5;
+const ARTIFACT_CHAR_CAP = 40000;
 
 const client = new Anthropic();
 const app = express();
@@ -13,14 +15,16 @@ const app = express();
 app.use(express.json({ limit: "40mb" }));
 app.use(express.static("public"));
 
-const SYSTEM_PROMPT = `You are Fuse, a creative engine that blends "ingredients" into a single interactive HTML artifact.
+const HTML_SYSTEM = `You are Fuse, a creative engine that blends "ingredients" into a single interactive HTML artifact.
 
-You receive up to five ingredients — short text snippets and/or images — each with an influence weight (a percentage), plus a directive describing what to make (a report, a game, a quiz, a slide deck, a choose-your-own-adventure, or anything else).
+You receive up to five ingredients — short text snippets, images, and sometimes previously fused artifacts — each with an influence weight (a percentage), plus a directive describing what to make (a report, a game, a quiz, a slide deck, a choose-your-own-adventure, or anything else).
 
 How to blend:
 - Treat the weights as how strongly each ingredient should shape the result. A dominant ingredient (45%+) sets the theme, subject, or mechanic. Supporting ingredients (20-44%) shape major sections or features. Accent ingredients (<20%) appear as flavor, easter eggs, or styling touches.
 - Every ingredient must be recognizably present in the output. Nothing gets dropped.
 - For image ingredients, blend what the image depicts — its subject, mood, palette, and style — into the artifact. Echo the image's color palette in your design.
+- For fused-artifact ingredients (HTML from a previous fusion), blend their themes, content, characters, and mechanics — remix them, don't just copy the markup.
+- Respect the PROXIMITY notes if present: touching ingredients should merge into one tightly-integrated concept; a distant ingredient is a garnish that seasons the whole rather than a core element.
 
 Output contract (strict):
 - Respond with exactly one complete, self-contained HTML document and nothing else. Start with <!doctype html>. No markdown fences, no commentary before or after.
@@ -29,13 +33,46 @@ Output contract (strict):
 - Make it delightful: polished layout, a cohesive palette drawn from the ingredients, satisfying micro-interactions. For games/quizzes/adventures, the interactivity must genuinely work (state, scoring, branching). For slide decks, include keyboard and button navigation. For reports, invent plausible, clearly-illustrative content grounded in the ingredients.
 - Keep it responsive and usable on both desktop and mobile widths.`;
 
+const IMAGE_PROMPT_SYSTEM = `You are Fuse, a creative engine that blends "ingredients" into a single picture.
+
+You receive up to five ingredients — short text snippets, images, and sometimes previously fused artifacts — each with an influence weight (a percentage), plus an optional directive.
+
+Write ONE vivid image-generation prompt that fuses them: the dominant ingredient (45%+) sets the subject and overall style; supporting ingredients (20-44%) shape major elements; accents (<20%) appear as small touches. For image ingredients, fold in what the image depicts and its palette. Respect the PROXIMITY notes if present: touching ingredients merge into one integrated concept; a distant ingredient is a subtle garnish. Describe subject, composition, style, palette, lighting, and mood in concrete visual language.
+
+Output contract (strict): respond with only the prompt text — plain prose, 60 to 150 words, no headings, no quotes, no commentary, no mention of weights or percentages.`;
+
+/* ---------------- Prompt assembly ---------------- */
+
 function weightLabel(pct) {
   if (pct >= 45) return "dominant";
   if (pct >= 20) return "supporting";
   return "accent";
 }
 
-function buildUserContent(items, directive, outputType) {
+function proximityLines(clusters, itemCount) {
+  if (!Array.isArray(clusters) || itemCount < 2) return [];
+  const valid = clusters.filter(
+    (c) => Array.isArray(c) && c.every((n) => Number.isInteger(n) && n >= 1 && n <= itemCount)
+  );
+  const groups = valid.filter((c) => c.length >= 2);
+  const solos = valid.filter((c) => c.length === 1).map((c) => c[0]);
+  if (!groups.length) return [];
+  const lines = ["PROXIMITY (how the ingredients sit on the canvas):"];
+  for (const g of groups) {
+    lines.push(
+      `- Ingredients ${g.join(" + ")} are touching — fuse them into one tightly-integrated concept.`
+    );
+  }
+  if (solos.length) {
+    const s = solos.length > 1;
+    lines.push(
+      `- Ingredient${s ? "s" : ""} ${solos.join(", ")} sit${s ? "" : "s"} apart — use ${s ? "them" : "it"} as a garnish that seasons the whole rather than a core element.`
+    );
+  }
+  return lines;
+}
+
+function buildUserContent({ items, directive, outputType, clusters, mode }) {
   const content = [];
   const lines = [];
   lines.push(`Here are the ${items.length} ingredient(s) on the canvas:`);
@@ -45,20 +82,37 @@ function buildUserContent(items, directive, outputType) {
     const pct = Math.round(item.weightPct);
     const label = weightLabel(pct);
     if (item.kind === "image") {
-      lines.push(`INGREDIENT ${n} — image, ${pct}% influence (${label}): see attached image ${n}${item.name ? ` ("${item.name}")` : ""}.`);
+      lines.push(
+        `INGREDIENT ${n} — image, ${pct}% influence (${label}): see attached image ${n}${item.name ? ` ("${item.name}")` : ""}.`
+      );
+    } else if (item.kind === "artifact") {
+      lines.push(
+        `INGREDIENT ${n} — fused artifact from a previous creation${item.label ? ` ("${item.label}")` : ""}, ${pct}% influence (${label}): blend its themes, content, and mechanics. Its HTML source is attached below.`
+      );
     } else {
       lines.push(`INGREDIENT ${n} — text, ${pct}% influence (${label}): «${item.text}»`);
     }
   });
 
+  const prox = proximityLines(clusters, items.length);
+  if (prox.length) {
+    lines.push("");
+    lines.push(...prox);
+  }
+
   lines.push("");
-  const typeNote =
-    outputType && outputType !== "auto"
-      ? `The artifact must be a ${outputType}.`
-      : "Choose the artifact format that best fits the directive and ingredients.";
-  lines.push(`DIRECTIVE: ${directive || "Fuse these ingredients into something delightful."}`);
-  lines.push(typeNote);
-  lines.push("Remember the output contract: one self-contained HTML document, nothing else.");
+  if (mode === "image") {
+    lines.push(`DIRECTIVE: ${directive || "Fuse these ingredients into one striking picture."}`);
+    lines.push("Remember the output contract: only the image prompt text, nothing else.");
+  } else {
+    const typeNote =
+      outputType && outputType !== "auto"
+        ? `The artifact must be a ${outputType}.`
+        : "Choose the artifact format that best fits the directive and ingredients.";
+    lines.push(`DIRECTIVE: ${directive || "Fuse these ingredients into something delightful."}`);
+    lines.push(typeNote);
+    lines.push("Remember the output contract: one self-contained HTML document, nothing else.");
+  }
 
   content.push({ type: "text", text: lines.join("\n") });
 
@@ -67,11 +121,14 @@ function buildUserContent(items, directive, outputType) {
       content.push({ type: "text", text: `Attached image ${i + 1}:` });
       content.push({
         type: "image",
-        source: {
-          type: "base64",
-          media_type: item.mediaType,
-          data: item.imageBase64,
-        },
+        source: { type: "base64", media_type: item.mediaType, data: item.imageBase64 },
+      });
+    } else if (item.kind === "artifact") {
+      const html = item.html.slice(0, ARTIFACT_CHAR_CAP);
+      const truncated = item.html.length > ARTIFACT_CHAR_CAP ? " (truncated)" : "";
+      content.push({
+        type: "text",
+        text: `Source of ingredient ${i + 1}${truncated}:\n${html}`,
       });
     }
   });
@@ -79,12 +136,69 @@ function buildUserContent(items, directive, outputType) {
   return content;
 }
 
+/* ---------------- Claude streaming with refusal fallback ---------------- */
+
+async function streamClaude({ system, messages, maxTokens, onText }) {
+  const base = { model: MODEL, max_tokens: maxTokens, system, messages };
+  let emitted = false;
+  const wrap = (text) => {
+    emitted = true;
+    onText(text);
+  };
+  try {
+    const stream = client.beta.messages.stream({
+      ...base,
+      betas: [FALLBACK_BETA],
+      fallbacks: [{ model: FALLBACK_MODEL }],
+    });
+    stream.on("text", wrap);
+    return await stream.finalMessage();
+  } catch (err) {
+    // If the org/platform doesn't support the fallback beta, retry plain —
+    // but only if nothing was streamed yet (otherwise we'd duplicate text).
+    if (!emitted && err instanceof BadRequestError && /fallback/i.test(String(err.message))) {
+      const stream = client.messages.stream(base);
+      stream.on("text", wrap);
+      return await stream.finalMessage();
+    }
+    throw err;
+  }
+}
+
+function refusalMessage(finalMessage) {
+  if (finalMessage.stop_reason !== "refusal") return null;
+  const category = finalMessage.stop_details?.category;
+  return `The model declined this request${category ? ` (${category})` : ""}. Try different ingredients or a different directive.`;
+}
+
+/* ---------------- OpenAI image generation ---------------- */
+
+async function generateImage(prompt) {
+  const r = await fetch("https://api.openai.com/v1/images/generations", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ model: IMAGE_MODEL, prompt, size: "1024x1024" }),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    throw new Error(data?.error?.message || `Image generation failed (${r.status}).`);
+  }
+  const b64 = data?.data?.[0]?.b64_json;
+  if (!b64) throw new Error("The image API returned no image data.");
+  return b64;
+}
+
+/* ---------------- Route ---------------- */
+
 function send(res, obj) {
   res.write(JSON.stringify(obj) + "\n");
 }
 
 app.post("/api/fuse", async (req, res) => {
-  const { items, directive, outputType } = req.body || {};
+  const { items, directive, outputType, clusters } = req.body || {};
 
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: "Add at least one ingredient to the canvas." });
@@ -99,55 +213,69 @@ app.post("/api/fuse", async (req, res) => {
     if (item.kind === "image" && (!item.imageBase64 || !item.mediaType)) {
       return res.status(400).json({ error: "An image ingredient is missing data." });
     }
+    if (item.kind === "artifact" && !item.html?.trim()) {
+      return res.status(400).json({ error: "An artifact ingredient is missing its source." });
+    }
+  }
+
+  const imageMode = outputType === "image";
+  if (imageMode && !process.env.OPENAI_API_KEY) {
+    return res
+      .status(400)
+      .json({ error: "Image output needs OPENAI_API_KEY set on the server." });
   }
 
   res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache");
   res.flushHeaders();
 
-  const messages = [{ role: "user", content: buildUserContent(items, directive, outputType) }];
-  const base = {
-    model: MODEL,
-    max_tokens: 64000,
-    system: SYSTEM_PROMPT,
-    messages,
-  };
-
-  let emittedText = false;
-  const onText = (text) => {
-    emittedText = true;
-    send(res, { t: "delta", text });
-  };
+  const onText = (text) => send(res, { t: "delta", text });
 
   try {
-    let finalMessage;
-    try {
-      // Preferred path: Fable 5 with a server-side refusal fallback to Opus 4.8,
-      // so a rare safety-classifier decline is re-served instead of erroring.
-      const stream = client.beta.messages.stream({
-        ...base,
-        betas: [FALLBACK_BETA],
-        fallbacks: [{ model: FALLBACK_MODEL }],
-      });
-      stream.on("text", onText);
-      finalMessage = await stream.finalMessage();
-    } catch (err) {
-      // If the org/platform doesn't support the fallback beta, retry plain —
-      // but only if nothing was streamed yet (otherwise we'd duplicate text).
-      if (!emittedText && err instanceof BadRequestError && /fallback/i.test(String(err.message))) {
-        const stream = client.messages.stream(base);
-        stream.on("text", onText);
-        finalMessage = await stream.finalMessage();
-      } else {
-        throw err;
-      }
+    const messages = [
+      {
+        role: "user",
+        content: buildUserContent({
+          items,
+          directive,
+          outputType,
+          clusters,
+          mode: imageMode ? "image" : "html",
+        }),
+      },
+    ];
+
+    const finalMessage = await streamClaude({
+      system: imageMode ? IMAGE_PROMPT_SYSTEM : HTML_SYSTEM,
+      messages,
+      maxTokens: imageMode ? 2000 : 64000,
+      onText,
+    });
+
+    const refused = refusalMessage(finalMessage);
+    if (refused) {
+      send(res, { t: "err", error: refused });
+      return;
     }
 
-    if (finalMessage.stop_reason === "refusal") {
-      const category = finalMessage.stop_details?.category;
+    if (imageMode) {
+      const prompt = finalMessage.content
+        .filter((b) => b.type === "text")
+        .map((b) => b.text)
+        .join("")
+        .trim();
+      send(res, { t: "phase", phase: "paint", imageModel: IMAGE_MODEL });
+      const b64 = await generateImage(prompt);
+      send(res, { t: "image", b64, mediaType: "image/png" });
       send(res, {
-        t: "err",
-        error: `The model declined this request${category ? ` (${category})` : ""}. Try different ingredients or a different directive.`,
+        t: "done",
+        model: finalMessage.model,
+        imageModel: IMAGE_MODEL,
+        stopReason: finalMessage.stop_reason,
+        usage: {
+          input: finalMessage.usage?.input_tokens,
+          output: finalMessage.usage?.output_tokens,
+        },
       });
     } else {
       send(res, {
@@ -178,5 +306,8 @@ app.listen(PORT, () => {
     console.warn(
       "Note: ANTHROPIC_API_KEY is not set. The UI will load, but fusing will fail unless the SDK finds credentials another way (e.g. an `ant auth login` profile)."
     );
+  }
+  if (!process.env.OPENAI_API_KEY) {
+    console.warn("Note: OPENAI_API_KEY is not set — the Image output type will be unavailable.");
   }
 });

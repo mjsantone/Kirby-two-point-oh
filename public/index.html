@@ -71,6 +71,7 @@
         <button class="otype" data-type="quiz">Quiz</button>
         <button class="otype" data-type="slide deck">Slides</button>
         <button class="otype" data-type="choose-your-own-adventure">Adventure</button>
+        <button class="otype otype-image" data-type="image">Image</button>
       </div>
     </div>
 
@@ -84,12 +85,14 @@
         <span id="result-meta"></span>
       </div>
       <div class="result-actions">
-        <button id="result-download" hidden>Download .html</button>
+        <button id="result-remix" hidden>✦ Remix as ingredient</button>
+        <button id="result-download" hidden>Download</button>
         <button id="result-close">Close</button>
       </div>
     </header>
     <pre id="result-code" class="visible"></pre>
     <iframe id="result-frame" sandbox="allow-scripts allow-popups" title="Fused artifact"></iframe>
+    <div id="result-image-wrap"><img id="result-image" alt="Fused image" /></div>
   </section>
 
   <script src="app.js"></script>

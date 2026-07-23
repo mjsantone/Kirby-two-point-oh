@@ -388,6 +388,42 @@ html, body {
 }
 #result-frame.visible { display: block; }
 
+#result-image-wrap {
+  flex: 1;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: #0d0a1e;
+  min-height: 0;
+}
+#result-image-wrap.visible { display: flex; }
+#result-image {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 14px;
+  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.5);
+}
+
+#result-remix {
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+}
+
+.otype-image.selected {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #33081f;
+}
+
+.blob-artifact-label { display: block; }
+.blob-artifact-label::before {
+  content: "✦";
+  display: block;
+  font-size: 1.5em;
+  margin-bottom: 2px;
+}
+
 /* ---------- Small screens ---------- */
 
 @media (max-width: 720px) {

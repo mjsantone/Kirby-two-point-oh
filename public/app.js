@@ -30,9 +30,14 @@ const resultMeta = document.getElementById("result-meta");
 const resultCode = document.getElementById("result-code");
 const resultFrame = document.getElementById("result-frame");
 const resultDownload = document.getElementById("result-download");
+const resultRemix = document.getElementById("result-remix");
+const resultImageWrap = document.getElementById("result-image-wrap");
+const resultImage = document.getElementById("result-image");
 
 let editingBlobId = null; // when the text entry is editing an existing blob
 let lastArtifactHtml = "";
+let lastImageDataUrl = "";
+let resultKind = null; // 'html' | 'image'
 
 /* ---------------- Rendering ---------------- */
 
@@ -68,6 +73,12 @@ function render() {
       img.alt = b.name || "ingredient image";
       img.draggable = false;
       el.appendChild(img);
+    } else if (b.kind === "artifact") {
+      const span = document.createElement("span");
+      span.className = "blob-text blob-artifact-label";
+      span.style.fontSize = fontSizeFor(b.r) + "px";
+      span.textContent = b.label || "fusion";
+      el.appendChild(span);
     } else {
       const span = document.createElement("span");
       span.className = "blob-text";
@@ -393,6 +404,30 @@ document.querySelectorAll(".otype").forEach((btn) => {
   });
 });
 
+/* ---------------- Proximity clusters ---------------- */
+
+function computeClusters() {
+  // Union-find over blobs whose circles touch (goo-merged on screen).
+  // Returns arrays of 1-based indices matching the INGREDIENT numbering.
+  const parent = blobs.map((_, i) => i);
+  const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  for (let i = 0; i < blobs.length; i++) {
+    for (let j = i + 1; j < blobs.length; j++) {
+      const a = blobs[i], b = blobs[j];
+      if (Math.hypot(a.x - b.x, a.y - b.y) <= a.r + b.r + 14) {
+        parent[find(i)] = find(j);
+      }
+    }
+  }
+  const groups = new Map();
+  blobs.forEach((_, i) => {
+    const root = find(i);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(i + 1);
+  });
+  return [...groups.values()];
+}
+
 /* ---------------- Fuse ---------------- */
 
 fuseBtn.addEventListener("click", fuse);
@@ -416,8 +451,12 @@ async function fuse() {
         weightPct: w[b.id],
       };
     }
+    if (b.kind === "artifact") {
+      return { kind: "artifact", html: b.html, label: b.label, weightPct: w[b.id] };
+    }
     return { kind: "text", text: b.text, weightPct: w[b.id] };
   });
+  const clusters = computeClusters();
 
   openResultPanel();
   let raw = "";
@@ -426,7 +465,7 @@ async function fuse() {
     const res = await fetch("/api/fuse", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items, directive: directiveInput.value.trim(), outputType }),
+      body: JSON.stringify({ items, directive: directiveInput.value.trim(), outputType, clusters }),
     });
 
     if (!res.ok && !res.headers.get("content-type")?.includes("ndjson")) {
@@ -456,6 +495,11 @@ async function fuse() {
         if (msg.t === "delta") {
           raw += msg.text;
           streamToCode(raw);
+        } else if (msg.t === "phase" && msg.phase === "paint") {
+          resultStatus.textContent = "Painting…";
+          resultMeta.textContent = `sending the fused prompt to ${msg.imageModel}`;
+        } else if (msg.t === "image") {
+          lastImageDataUrl = `data:${msg.mediaType};base64,${msg.b64}`;
         } else if (msg.t === "done") {
           finishResult(raw, msg);
         } else if (msg.t === "err") {
@@ -486,8 +530,13 @@ function openResultPanel() {
   resultCode.classList.add("visible");
   resultFrame.classList.remove("visible");
   resultFrame.removeAttribute("srcdoc");
+  resultImageWrap.classList.remove("visible");
+  resultImage.removeAttribute("src");
   resultDownload.hidden = true;
+  resultRemix.hidden = true;
   lastArtifactHtml = "";
+  lastImageDataUrl = "";
+  resultKind = null;
 }
 
 function streamToCode(raw) {
@@ -509,26 +558,60 @@ function extractHtml(raw) {
 }
 
 function finishResult(raw, meta) {
-  lastArtifactHtml = extractHtml(raw);
-  resultFrame.srcdoc = lastArtifactHtml;
-  resultFrame.classList.add("visible");
   resultCode.classList.remove("visible");
+  if (lastImageDataUrl) {
+    resultKind = "image";
+    resultImage.src = lastImageDataUrl;
+    resultImageWrap.classList.add("visible");
+  } else {
+    resultKind = "html";
+    lastArtifactHtml = extractHtml(raw);
+    resultFrame.srcdoc = lastArtifactHtml;
+    resultFrame.classList.add("visible");
+  }
   resultStatus.textContent = "Fused ✦";
   const bits = [];
   if (meta.model) bits.push(meta.model);
+  if (meta.imageModel) bits.push(`→ ${meta.imageModel}`);
   if (meta.usage?.output) bits.push(`${meta.usage.output.toLocaleString()} tokens out`);
   if (meta.stopReason === "max_tokens") bits.push("⚠ truncated at token limit");
   resultMeta.textContent = bits.join(" · ");
+  resultDownload.textContent = resultKind === "image" ? "Download .png" : "Download .html";
   resultDownload.hidden = false;
+  resultRemix.hidden = false;
 }
 
 resultDownload.addEventListener("click", () => {
-  const blob = new Blob([lastArtifactHtml], { type: "text/html" });
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "fusion.html";
-  a.click();
-  URL.revokeObjectURL(a.href);
+  if (resultKind === "image") {
+    a.href = lastImageDataUrl;
+    a.download = "fusion.png";
+    a.click();
+  } else {
+    const blob = new Blob([lastArtifactHtml], { type: "text/html" });
+    a.href = URL.createObjectURL(blob);
+    a.download = "fusion.html";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+});
+
+resultRemix.addEventListener("click", () => {
+  if (blobs.length >= MAX_ITEMS) return flashHint(`Max ${MAX_ITEMS} ingredients — remove one first.`);
+  const label = (directiveInput.value.trim() || "fusion").slice(0, 40);
+  if (resultKind === "image" && lastImageDataUrl) {
+    addBlob({
+      kind: "image",
+      dataUrl: lastImageDataUrl,
+      mediaType: "image/png",
+      name: "fusion.png",
+      r: 85,
+    });
+  } else if (resultKind === "html" && lastArtifactHtml) {
+    addBlob({ kind: "artifact", html: lastArtifactHtml, label, r: 80 });
+  }
+  resultPanel.hidden = true;
+  render();
 });
 
 document.getElementById("result-close").addEventListener("click", () => {
