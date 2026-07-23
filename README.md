@@ -20,7 +20,7 @@ npm start
 - **Backend** (`server.js`): a small Express server that holds the API key and exposes `POST /api/fuse`. It sends text ingredients inline and images as vision blocks to `claude-fable-5` with a weighted-blend system prompt, streams the response back as NDJSON, and includes a server-side refusal fallback to `claude-opus-4-8` (with a graceful retry if the fallback beta isn't available to your org).
 - **Output contract**: the model must return exactly one self-contained HTML document — inline CSS/JS, no external requests — so it renders safely in `<iframe sandbox="allow-scripts">`.
 - **Proximity semantics**: blobs whose circles touch (the goo merge you see) are grouped client-side and described to the model as "fuse these tightly"; a blob sitting apart becomes "a garnish that seasons the whole".
-- **Image output**: pick the **Image** chip and the fusion runs in two phases — Claude fuses the weighted ingredients into one rich image prompt (streamed live), then the server calls OpenAI's image API (`gpt-image-2` by default, configurable via `IMAGE_MODEL`) and returns the picture.
+- **Image output**: pick the **Image** chip and the fusion runs in two phases — Claude fuses the weighted ingredients into one rich image prompt (streamed live), then the server calls OpenAI's image API (`gpt-image-2` by default, configurable via `IMAGE_MODEL`) and returns the picture. When the canvas has image ingredients they're attached **directly as source images** via the edits endpoint — the generator blends the actual pixels, with Claude's fused prompt as the transformation instructions; text-only canvases use the generations endpoint.
 - **Remix loop**: any finished result has a **✦ Remix as ingredient** button. A generated image returns to the canvas as an image blob; an HTML artifact returns as a ✦ artifact blob whose source (capped at 40k chars) is fed back as an ingredient on the next fuse.
 
 ## Config
@@ -36,5 +36,4 @@ npm start
 ## Ideas for later
 
 - True marching-squares metaballs on `<canvas>` for richer goo
-- Use input images directly in image generation (OpenAI edits endpoint) instead of describing them through the fused prompt
 - Shareable gallery of fusions

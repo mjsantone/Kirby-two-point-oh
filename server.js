@@ -6,6 +6,7 @@ const MODEL = process.env.FUSE_MODEL || "claude-fable-5";
 const FALLBACK_MODEL = "claude-opus-4-8";
 const FALLBACK_BETA = "server-side-fallback-2026-06-01";
 const IMAGE_MODEL = process.env.IMAGE_MODEL || "gpt-image-2";
+const OPENAI_BASE = process.env.OPENAI_BASE_URL || "https://api.openai.com";
 const MAX_ITEMS = 5;
 const ARTIFACT_CHAR_CAP = 40000;
 
@@ -37,7 +38,9 @@ const IMAGE_PROMPT_SYSTEM = `You are Fuse, a creative engine that blends "ingred
 
 You receive up to five ingredients — short text snippets, images, and sometimes previously fused artifacts — each with an influence weight (a percentage), plus an optional directive.
 
-Write ONE vivid image-generation prompt that fuses them: the dominant ingredient (45%+) sets the subject and overall style; supporting ingredients (20-44%) shape major elements; accents (<20%) appear as small touches. For image ingredients, fold in what the image depicts and its palette. Respect the PROXIMITY notes if present: touching ingredients merge into one integrated concept; a distant ingredient is a subtle garnish. Describe subject, composition, style, palette, lighting, and mood in concrete visual language.
+Write ONE vivid image-generation prompt that fuses them: the dominant ingredient (45%+) sets the subject and overall style; supporting ingredients (20-44%) shape major elements; accents (<20%) appear as small touches. Respect the PROXIMITY notes if present: touching ingredients merge into one integrated concept; a distant ingredient is a subtle garnish. Describe subject, composition, style, palette, lighting, and mood in concrete visual language.
+
+If image ingredients are present, they will also be handed to the image generator directly as source images, in the same order they are numbered here. Write the prompt as transformation instructions: say how to combine, restyle, or recompose the source images and how to weave the other ingredients around them, referring to each source naturally (e.g. "the photo of the cat"). Weights still govern how prominent each source is.
 
 Output contract (strict): respond with only the prompt text — plain prose, 60 to 150 words, no headings, no quotes, no commentary, no mention of weights or percentages.`;
 
@@ -103,6 +106,11 @@ function buildUserContent({ items, directive, outputType, clusters, mode }) {
   lines.push("");
   if (mode === "image") {
     lines.push(`DIRECTIVE: ${directive || "Fuse these ingredients into one striking picture."}`);
+    if (items.some((it) => it.kind === "image")) {
+      lines.push(
+        "The image ingredients above will be handed to the image generator as source images (in the same order) — write the prompt as instructions for transforming and combining them."
+      );
+    }
     lines.push("Remember the output contract: only the image prompt text, nothing else.");
   } else {
     const typeNote =
@@ -173,15 +181,33 @@ function refusalMessage(finalMessage) {
 
 /* ---------------- OpenAI image generation ---------------- */
 
-async function generateImage(prompt) {
-  const r = await fetch("https://api.openai.com/v1/images/generations", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ model: IMAGE_MODEL, prompt, size: "1024x1024" }),
-  });
+async function generateImage(prompt, imageItems = []) {
+  const auth = { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` };
+  let r;
+  if (imageItems.length) {
+    // Source images go to the edits endpoint directly, so the generator blends
+    // the actual pixels; the fused prompt acts as transformation instructions.
+    const form = new FormData();
+    form.append("model", IMAGE_MODEL);
+    form.append("prompt", prompt);
+    form.append("size", "1024x1024");
+    imageItems.forEach((item, i) => {
+      const buf = Buffer.from(item.imageBase64, "base64");
+      const ext = item.mediaType === "image/png" ? "png" : "jpg";
+      form.append("image[]", new Blob([buf], { type: item.mediaType }), `ingredient-${i + 1}.${ext}`);
+    });
+    r = await fetch(`${OPENAI_BASE}/v1/images/edits`, {
+      method: "POST",
+      headers: auth,
+      body: form,
+    });
+  } else {
+    r = await fetch(`${OPENAI_BASE}/v1/images/generations`, {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: IMAGE_MODEL, prompt, size: "1024x1024" }),
+    });
+  }
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
     throw new Error(data?.error?.message || `Image generation failed (${r.status}).`);
@@ -264,8 +290,14 @@ app.post("/api/fuse", async (req, res) => {
         .map((b) => b.text)
         .join("")
         .trim();
-      send(res, { t: "phase", phase: "paint", imageModel: IMAGE_MODEL });
-      const b64 = await generateImage(prompt);
+      const imageItems = items.filter((it) => it.kind === "image");
+      send(res, {
+        t: "phase",
+        phase: "paint",
+        imageModel: IMAGE_MODEL,
+        sourceImages: imageItems.length,
+      });
+      const b64 = await generateImage(prompt, imageItems);
       send(res, { t: "image", b64, mediaType: "image/png" });
       send(res, {
         t: "done",

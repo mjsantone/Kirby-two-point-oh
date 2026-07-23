@@ -497,7 +497,9 @@ async function fuse() {
           streamToCode(raw);
         } else if (msg.t === "phase" && msg.phase === "paint") {
           resultStatus.textContent = "Painting…";
-          resultMeta.textContent = `sending the fused prompt to ${msg.imageModel}`;
+          resultMeta.textContent = msg.sourceImages
+            ? `blending ${msg.sourceImages} source image${msg.sourceImages > 1 ? "s" : ""} with ${msg.imageModel}`
+            : `sending the fused prompt to ${msg.imageModel}`;
         } else if (msg.t === "image") {
           lastImageDataUrl = `data:${msg.mediaType};base64,${msg.b64}`;
         } else if (msg.t === "done") {
