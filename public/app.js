@@ -56,19 +56,30 @@ function fontSizeFor(r) {
 
 function render() {
   const w = weights();
+  const three = window.Stage3D?.active;
   gooLayer.innerHTML = "";
   contentLayer.innerHTML = "";
 
+  if (three) {
+    window.Stage3D.setBlobs(blobs.map((b) => ({ id: b.id, x: b.x, y: b.y, r: b.r, color: b.color })));
+  }
+
   for (const b of blobs) {
-    const goo = document.createElement("div");
-    goo.className = "goo-blob";
-    goo.style.cssText = `left:${b.x}px;top:${b.y}px;width:${b.r * 2}px;height:${b.r * 2}px;background:${b.color}`;
-    gooLayer.appendChild(goo);
+    if (!three) {
+      const goo = document.createElement("div");
+      goo.className = "goo-blob";
+      goo.style.cssText = `left:${b.x}px;top:${b.y}px;width:${b.r * 2}px;height:${b.r * 2}px;background:${b.color}`;
+      gooLayer.appendChild(goo);
+    }
 
     const el = document.createElement("div");
     el.className = "blob" + (b.id === selectedId ? " selected" : "");
     el.dataset.id = b.id;
     el.style.cssText = `left:${b.x}px;top:${b.y}px;width:${b.r * 2}px;height:${b.r * 2}px;`;
+    if (three && b.kind !== "image") {
+      // In 3D mode the goo is glassy — give labels a soft tinted backdrop
+      el.style.background = `radial-gradient(circle, ${b.color}55 0%, ${b.color}22 62%, transparent 74%)`;
+    }
     if (b.kind === "image") {
       const img = document.createElement("img");
       img.src = b.dataUrl;
@@ -243,11 +254,12 @@ async function addImageFiles(files, dropX, dropY) {
       break;
     }
     try {
-      const { dataUrl, mediaType } = await downscaleImage(file);
+      const { dataUrl, mediaType, color } = await downscaleImage(file);
       addBlob({
         kind: "image",
         dataUrl,
         mediaType,
+        color, // sampled dominant color — the goo inherits the photo's palette
         name: file.name,
         r: 85,
         x: dropX,
@@ -275,7 +287,7 @@ function downscaleImage(file, maxDim = 1024) {
       const keepPng = file.type === "image/png" || file.type === "image/gif";
       const mediaType = keepPng ? "image/png" : "image/jpeg";
       const dataUrl = canvas.toDataURL(mediaType, 0.85);
-      resolve({ dataUrl, mediaType });
+      resolve({ dataUrl, mediaType, color: dominantColor(canvas) });
     };
     img.onerror = () => {
       URL.revokeObjectURL(url);
@@ -283,6 +295,30 @@ function downscaleImage(file, maxDim = 1024) {
     };
     img.src = url;
   });
+}
+
+function dominantColor(canvas) {
+  // Saturation-weighted average — favors the image's vivid hues over greys
+  const s = 20;
+  const tiny = document.createElement("canvas");
+  tiny.width = tiny.height = s;
+  const tctx = tiny.getContext("2d");
+  tctx.drawImage(canvas, 0, 0, s, s);
+  const d = tctx.getImageData(0, 0, s, s).data;
+  let r = 0, g = 0, b = 0, wsum = 0, ar = 0, ag = 0, ab = 0, n = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] < 100) continue;
+    const R = d[i], G = d[i + 1], B = d[i + 2];
+    const mx = Math.max(R, G, B), mn = Math.min(R, G, B);
+    const sat = (mx - mn) / 255;
+    const wt = sat * sat * (0.3 + (0.7 * mx) / 255) + 0.02;
+    r += R * wt; g += G * wt; b += B * wt; wsum += wt;
+    ar += R; ag += G; ab += B; n++;
+  }
+  if (!n) return PALETTE[0];
+  if (wsum < 0.5) { r = ar; g = ag; b = ab; wsum = n; } // near-greyscale image
+  const hex = (v) => Math.round(v / wsum).toString(16).padStart(2, "0");
+  return `#${hex(r)}${hex(g)}${hex(b)}`;
 }
 
 /* Drag & drop files onto the stage */
@@ -441,6 +477,19 @@ async function fuse() {
   fuseBtn.textContent = "Fusing…";
   render();
 
+  if (window.Stage3D?.active) {
+    // Pull all the goo into one mass at the weighted centroid while we fuse
+    const cw = weights();
+    let cx = 0, cy = 0, tw = 0;
+    for (const b of blobs) {
+      cx += b.x * cw[b.id];
+      cy += b.y * cw[b.id];
+      tw += cw[b.id];
+    }
+    if (tw > 0) window.Stage3D.collapse({ x: cx / tw, y: cy / tw });
+    document.body.classList.add("collapsing");
+  }
+
   const w = weights();
   const items = blobs.map((b) => {
     if (b.kind === "image") {
@@ -521,6 +570,7 @@ async function fuse() {
       }
     }
   } catch (err) {
+    showResultPanel();
     resultStatus.textContent = "That didn't work";
     resultMeta.textContent = err.message;
     if (!raw) {
@@ -531,15 +581,32 @@ async function fuse() {
     fusing = false;
     fuseBtn.classList.remove("busy");
     fuseBtn.textContent = "Fuse";
+    window.Stage3D?.release();
+    document.body.classList.remove("collapsing");
     render();
   }
 }
 
 /* ---------------- Result panel ---------------- */
 
+let panelRevealTimer = null;
+
+function showResultPanel() {
+  clearTimeout(panelRevealTimer);
+  panelRevealTimer = null;
+  resultPanel.hidden = false;
+}
+
 function openResultPanel(mode) {
   panelMode = mode;
-  resultPanel.hidden = false;
+  clearTimeout(panelRevealTimer);
+  if (window.Stage3D?.active) {
+    // Let the collapse animation play before the panel covers the stage
+    resultPanel.hidden = true;
+    panelRevealTimer = setTimeout(showResultPanel, 1150);
+  } else {
+    resultPanel.hidden = false;
+  }
   resultStatus.textContent = "Fusing…";
   resultMeta.textContent = "streaming from the model";
   resultCode.textContent = "";
@@ -581,6 +648,7 @@ function extractHtml(raw) {
 }
 
 function finishResult(raw, meta) {
+  showResultPanel();
   resultCode.classList.remove("visible");
   if (lastImageDataUrl) {
     resultKind = "image";
@@ -647,4 +715,5 @@ document.getElementById("result-close").addEventListener("click", () => {
 /* ---------------- Init ---------------- */
 
 window.addEventListener("resize", render);
+window.addEventListener("stage3d-ready", render);
 render();

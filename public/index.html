@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Fuse — metaball mixer</title>
   <link rel="stylesheet" href="style.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "/vendor/three/build/three.module.js",
+        "three/addons/": "/vendor/three/examples/jsm/"
+      }
+    }
+  </script>
 </head>
 <body>
   <!-- Gooey filter used by the metaball layer -->
@@ -96,5 +104,6 @@
   </section>
 
   <script src="app.js"></script>
+  <script type="module" src="stage3d.js"></script>
 </body>
 </html>

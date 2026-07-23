@@ -16,6 +16,7 @@ const app = express();
 
 app.use(express.json({ limit: "40mb" }));
 app.use(express.static("public"));
+app.use("/vendor/three", express.static("node_modules/three"));
 
 const HTML_SYSTEM = `You are Fuse, a creative engine that blends "ingredients" into a single interactive HTML artifact.
 
