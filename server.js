@@ -18,7 +18,7 @@ app.use(express.json({ limit: "40mb" }));
 app.use(express.static("public"));
 app.use("/vendor/three", express.static("node_modules/three"));
 
-const HTML_SYSTEM = `You are Fuse, a creative engine that blends "ingredients" into a single interactive HTML artifact.
+const HTML_SYSTEM_BASE = `You are Fuse, a creative engine that blends "ingredients" into a single interactive HTML artifact.
 
 You receive up to five ingredients — short text snippets, images, and sometimes previously fused artifacts — each with an influence weight (a percentage), plus a directive describing what to make (a report, a game, a quiz, a slide deck, a choose-your-own-adventure, or anything else).
 
@@ -35,6 +35,23 @@ Output contract (strict):
 - The page must work when loaded in a sandboxed iframe (scripts allowed, no network).
 - Make it delightful: polished layout, a cohesive palette drawn from the ingredients, satisfying micro-interactions. For games/quizzes/adventures, the interactivity must genuinely work (state, scoring, branching). For slide decks, include keyboard and button navigation. For reports, invent plausible, clearly-illustrative content grounded in the ingredients.
 - Keep it responsive and usable on both desktop and mobile widths.`;
+
+const ILLUSTRATIONS_ADDENDUM = `
+
+Illustrations (available): you may embed AI-generated images inside the artifact. Write an <img> tag whose src is exactly "/api/genimage?prompt=" followed by a URL-encoded, richly detailed visual description (subject, style, palette, lighting — consistent with the artifact's design). Optionally append "&size=wide" or "&size=tall" for banners and portraits. This same-origin endpoint is the one exception to the no-external-requests rule. Use at most 3 generated images per artifact, only where they genuinely elevate it. Each takes several seconds to load: always set explicit dimensions or CSS sizing plus a background-color placeholder so layout holds, give every image alt text, and design the page to work even if they never load.`;
+
+const IMAGE_SWITCH_ADDENDUM = `
+
+Output switch: if the directive plainly asks for a single image, picture, photo, poster, or illustration as the deliverable itself (not an interactive page), do not write HTML. Instead respond with exactly:
+IMAGE_PROMPT: <one richly detailed 60-150 word image prompt fusing the weighted ingredients>
+and nothing else.`;
+
+function buildHtmlSystem({ allowIllustrations, allowImageSwitch }) {
+  let s = HTML_SYSTEM_BASE;
+  if (allowIllustrations) s += ILLUSTRATIONS_ADDENDUM;
+  if (allowImageSwitch) s += IMAGE_SWITCH_ADDENDUM;
+  return s;
+}
 
 const IMAGE_PROMPT_SYSTEM = `You are Fuse, a creative engine that blends "ingredients" into a single picture.
 
@@ -183,7 +200,7 @@ function refusalMessage(finalMessage) {
 
 /* ---------------- OpenAI image generation ---------------- */
 
-async function generateImage(prompt, imageItems = []) {
+async function generateImage(prompt, imageItems = [], size = "1024x1024") {
   const auth = { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` };
   let r;
   if (imageItems.length) {
@@ -192,7 +209,7 @@ async function generateImage(prompt, imageItems = []) {
     const form = new FormData();
     form.append("model", IMAGE_MODEL);
     form.append("prompt", prompt);
-    form.append("size", "1024x1024");
+    form.append("size", size);
     imageItems.forEach((item, i) => {
       const buf = Buffer.from(item.imageBase64, "base64");
       const ext = item.mediaType === "image/png" ? "png" : "jpg";
@@ -207,7 +224,7 @@ async function generateImage(prompt, imageItems = []) {
     r = await fetch(`${OPENAI_BASE}/v1/images/generations`, {
       method: "POST",
       headers: { ...auth, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: IMAGE_MODEL, prompt, size: "1024x1024" }),
+      body: JSON.stringify({ model: IMAGE_MODEL, prompt, size }),
     });
   }
   const data = await r.json().catch(() => ({}));
@@ -218,6 +235,46 @@ async function generateImage(prompt, imageItems = []) {
   if (!b64) throw new Error("The image API returned no image data.");
   return b64;
 }
+
+/* ---------------- On-demand artifact illustrations ----------------
+   Artifacts may embed <img src="/api/genimage?prompt=..."> — generated on
+   first load, cached in memory, and served as PNG. */
+
+const GEN_SIZES = { square: "1024x1024", wide: "1536x1024", tall: "1024x1536" };
+const genImageCache = new Map(); // "size|prompt" -> Promise<Buffer>
+
+function genImageCached(prompt, size) {
+  const key = `${size}|${prompt}`;
+  let p = genImageCache.get(key);
+  if (!p) {
+    p = generateImage(prompt, [], size).then((b64) => Buffer.from(b64, "base64"));
+    p.catch(() => genImageCache.delete(key)); // don't cache failures
+    genImageCache.set(key, p);
+    if (genImageCache.size > 60) genImageCache.delete(genImageCache.keys().next().value);
+  }
+  return p;
+}
+
+const GEN_PLACEHOLDER_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512"><rect width="512" height="512" fill="#241b45"/><text x="256" y="248" fill="#8f83c9" font-family="sans-serif" font-size="22" text-anchor="middle">image unavailable</text><text x="256" y="282" fill="#5d5390" font-family="sans-serif" font-size="15" text-anchor="middle">generation failed</text></svg>`;
+
+app.get("/api/genimage", async (req, res) => {
+  const prompt = String(req.query.prompt || "").slice(0, 2000).trim();
+  const size = GEN_SIZES[req.query.size] || GEN_SIZES.square;
+  if (!prompt) return res.status(400).send("missing prompt");
+  if (!process.env.OPENAI_API_KEY) return res.status(503).send("image generation unavailable");
+  try {
+    const buf = await genImageCached(prompt, size);
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    res.send(buf);
+  } catch (err) {
+    console.error("genimage error:", err.message);
+    res.status(200); // non-2xx would render as a broken image inside artifacts
+    res.setHeader("Content-Type", "image/svg+xml");
+    res.setHeader("Cache-Control", "no-store");
+    res.send(GEN_PLACEHOLDER_SVG);
+  }
+});
 
 /* ---------------- Live HTML streaming ----------------
    Each HTML fusion is also exposed as a chunked text/html stream at
@@ -342,9 +399,27 @@ app.post("/api/fuse", async (req, res) => {
     send(res, { t: "live", id });
   }
 
+  // In Auto mode the model may answer "IMAGE_PROMPT: ..." instead of HTML —
+  // sniff the first characters of the stream and pivot to image generation.
+  const MARKER = "IMAGE_PROMPT:";
+  const genAvailable = !!process.env.OPENAI_API_KEY;
+  let rawAcc = "";
+  let autoMarker = null; // null = undecided, true = image pivot, false = html
+
   const onText = (text) => {
     send(res, { t: "delta", text });
-    feeder?.push(text);
+    rawAcc += text;
+    if (!imageMode && autoMarker === null) {
+      const lead = rawAcc.trimStart();
+      if (lead.length >= MARKER.length) autoMarker = lead.startsWith(MARKER);
+      else if (!MARKER.startsWith(lead)) autoMarker = false;
+      if (autoMarker === true) {
+        send(res, { t: "mode", kind: "image" });
+        feeder?.finish(); // close the (empty) live stream; the client flips views
+        feeder = null;
+      }
+    }
+    if (autoMarker !== true) feeder?.push(text);
   };
 
   try {
@@ -362,7 +437,12 @@ app.post("/api/fuse", async (req, res) => {
     ];
 
     const finalMessage = await streamClaude({
-      system: imageMode ? IMAGE_PROMPT_SYSTEM : HTML_SYSTEM,
+      system: imageMode
+        ? IMAGE_PROMPT_SYSTEM
+        : buildHtmlSystem({
+            allowIllustrations: genAvailable,
+            allowImageSwitch: genAvailable && (!outputType || outputType === "auto"),
+          }),
       messages,
       maxTokens: imageMode ? 2000 : 64000,
       onText,
@@ -381,6 +461,28 @@ app.post("/api/fuse", async (req, res) => {
         .map((b) => b.text)
         .join("")
         .trim();
+      const imageItems = items.filter((it) => it.kind === "image");
+      send(res, {
+        t: "phase",
+        phase: "paint",
+        imageModel: IMAGE_MODEL,
+        sourceImages: imageItems.length,
+      });
+      const b64 = await generateImage(prompt, imageItems);
+      send(res, { t: "image", b64, mediaType: "image/png" });
+      send(res, {
+        t: "done",
+        model: finalMessage.model,
+        imageModel: IMAGE_MODEL,
+        stopReason: finalMessage.stop_reason,
+        usage: {
+          input: finalMessage.usage?.input_tokens,
+          output: finalMessage.usage?.output_tokens,
+        },
+      });
+    } else if (autoMarker === true) {
+      // The model chose an image — run the fused prompt through the generator
+      const prompt = rawAcc.trimStart().slice(MARKER.length).trim();
       const imageItems = items.filter((it) => it.kind === "image");
       send(res, {
         t: "phase",

@@ -567,6 +567,15 @@ async function fuse() {
           // sandboxed iframe at it and the browser renders tags as they close.
           liveAttached = true;
           resultFrame.src = `/api/live/${msg.id}`;
+        } else if (msg.t === "mode" && msg.kind === "image") {
+          // Auto mode: the model chose an image over an HTML artifact
+          panelMode = "image";
+          liveAttached = false;
+          resultFrame.classList.remove("visible");
+          resultFrame.src = "about:blank";
+          resultCode.classList.add("visible");
+          resultMeta.textContent = "the model chose an image — fusing a prompt";
+          if (raw) streamToCode(raw);
         } else if (msg.t === "phase" && msg.phase === "paint") {
           resultStatus.textContent = "Painting…";
           resultMeta.textContent = msg.sourceImages
@@ -687,14 +696,32 @@ function finishResult(raw, meta) {
   resultRemix.hidden = false;
 }
 
-resultDownload.addEventListener("click", () => {
+resultDownload.addEventListener("click", async () => {
   const a = document.createElement("a");
   if (resultKind === "image") {
     a.href = lastImageDataUrl;
     a.download = "fusion.png";
     a.click();
   } else {
-    const blob = new Blob([lastArtifactHtml], { type: "text/html" });
+    // Inline any generated illustrations so the .html stays self-contained
+    let html = lastArtifactHtml;
+    const urls = [...new Set(html.match(/\/api\/genimage\?[^"'\s)>]+/g) || [])];
+    for (const u of urls.slice(0, 8)) {
+      try {
+        const r = await fetch(u.replace(/&amp;/g, "&"));
+        if (!r.ok) continue;
+        const blob = await r.blob();
+        const dataUrl = await new Promise((ok) => {
+          const fr = new FileReader();
+          fr.onload = () => ok(fr.result);
+          fr.readAsDataURL(blob);
+        });
+        html = html.split(u).join(dataUrl);
+      } catch {
+        /* leave the URL in place */
+      }
+    }
+    const blob = new Blob([html], { type: "text/html" });
     a.href = URL.createObjectURL(blob);
     a.download = "fusion.html";
     a.click();
