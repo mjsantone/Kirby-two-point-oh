@@ -1,4 +1,5 @@
 import express from "express";
+import { randomUUID } from "node:crypto";
 import Anthropic, { BadRequestError } from "@anthropic-ai/sdk";
 
 const PORT = process.env.PORT || 3000;
@@ -217,6 +218,84 @@ async function generateImage(prompt, imageItems = []) {
   return b64;
 }
 
+/* ---------------- Live HTML streaming ----------------
+   Each HTML fusion is also exposed as a chunked text/html stream at
+   /api/live/:id. The client points its sandboxed iframe there, and the
+   browser's own streaming parser renders the page tag-by-tag as it arrives. */
+
+const liveStreams = new Map(); // id -> {chunks: [], done: boolean, waiters: Set<res>}
+const LIVE_TTL_MS = 10 * 60 * 1000;
+const LIVE_HOLDBACK = 8; // keep a small tail so a trailing ``` fence never renders
+
+function createLiveStream() {
+  const id = randomUUID();
+  const s = { chunks: [], done: false, waiters: new Set() };
+  liveStreams.set(id, s);
+  setTimeout(() => liveStreams.delete(id), LIVE_TTL_MS).unref?.();
+  return { id, s };
+}
+
+function livePush(s, text) {
+  if (!text) return;
+  s.chunks.push(text);
+  for (const w of s.waiters) w.write(text);
+}
+
+function liveEnd(s) {
+  s.done = true;
+  for (const w of s.waiters) w.end();
+  s.waiters.clear();
+}
+
+// Feeds raw model deltas into a live stream, trimming any pre-document
+// preamble (e.g. a ```html fence) and holding back a small tail so trailing
+// junk can be stripped before the last flush.
+function liveFeeder(s) {
+  let raw = "";
+  let started = false;
+  let sentLen = 0;
+  return {
+    push(text) {
+      raw += text;
+      if (!started) {
+        const at = raw.search(/<!doctype html|<html[\s>]/i);
+        if (at >= 0) {
+          started = true;
+          sentLen = at;
+        } else if (raw.length > 3000) {
+          started = true; // no marker in sight — stream as-is
+        } else {
+          return;
+        }
+      }
+      const avail = raw.length - LIVE_HOLDBACK;
+      if (avail > sentLen) {
+        livePush(s, raw.slice(sentLen, avail));
+        sentLen = avail;
+      }
+    },
+    finish() {
+      if (started) {
+        const tail = raw.slice(sentLen).replace(/```\s*$/, "");
+        livePush(s, tail);
+      }
+      liveEnd(s);
+    },
+  };
+}
+
+app.get("/api/live/:id", (req, res) => {
+  const s = liveStreams.get(req.params.id);
+  if (!s) return res.status(404).send("This fusion's live stream has expired.");
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store");
+  res.flushHeaders();
+  for (const c of s.chunks) res.write(c);
+  if (s.done) return res.end();
+  s.waiters.add(res);
+  req.on("close", () => s.waiters.delete(res));
+});
+
 /* ---------------- Route ---------------- */
 
 function send(res, obj) {
@@ -255,7 +334,17 @@ app.post("/api/fuse", async (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.flushHeaders();
 
-  const onText = (text) => send(res, { t: "delta", text });
+  let feeder = null;
+  if (!imageMode) {
+    const { id, s } = createLiveStream();
+    feeder = liveFeeder(s);
+    send(res, { t: "live", id });
+  }
+
+  const onText = (text) => {
+    send(res, { t: "delta", text });
+    feeder?.push(text);
+  };
 
   try {
     const messages = [
@@ -280,6 +369,7 @@ app.post("/api/fuse", async (req, res) => {
 
     const refused = refusalMessage(finalMessage);
     if (refused) {
+      feeder?.finish();
       send(res, { t: "err", error: refused });
       return;
     }
@@ -310,6 +400,7 @@ app.post("/api/fuse", async (req, res) => {
         },
       });
     } else {
+      feeder?.finish();
       send(res, {
         t: "done",
         model: finalMessage.model,
@@ -321,6 +412,7 @@ app.post("/api/fuse", async (req, res) => {
       });
     }
   } catch (err) {
+    feeder?.finish();
     const detail =
       err?.status === 401 || /authentication method|apiKey or authToken/i.test(String(err?.message))
         ? "The server has no API credentials — set ANTHROPIC_API_KEY and restart."

@@ -2,7 +2,7 @@
 
 A playful canvas where you drop up to **5 ingredients** — text snippets and images, in any mix — arrange them as gooey metaballs, size each one for how much **influence** it should have, add a short directive ("make this into a retro arcade game"), and fuse them with **Claude Fable 5** into a single self-contained **HTML artifact**: a report, a game, a quiz, a slide deck, a choose-your-own-adventure, or whatever fits.
 
-The result streams in live and renders in a sandboxed iframe. Download it as a standalone `.html` file.
+The result **renders live as it streams** — the server re-exposes each fusion as a chunked `text/html` stream (`/api/live/:id`) that the sandboxed iframe loads directly, so the browser's own streaming parser paints the page tag-by-tag while the model writes it. Download any result as a standalone `.html` file.
 
 ## Quick start
 

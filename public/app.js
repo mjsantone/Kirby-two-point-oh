@@ -38,6 +38,8 @@ let editingBlobId = null; // when the text entry is editing an existing blob
 let lastArtifactHtml = "";
 let lastImageDataUrl = "";
 let resultKind = null; // 'html' | 'image'
+let panelMode = "html"; // what this fuse run is producing: 'html' | 'image'
+let liveAttached = false; // iframe is following the server's live HTML stream
 
 /* ---------------- Rendering ---------------- */
 
@@ -458,7 +460,7 @@ async function fuse() {
   });
   const clusters = computeClusters();
 
-  openResultPanel();
+  openResultPanel(outputType === "image" ? "image" : "html");
   let raw = "";
 
   try {
@@ -494,7 +496,16 @@ async function fuse() {
         }
         if (msg.t === "delta") {
           raw += msg.text;
-          streamToCode(raw);
+          if (panelMode === "html") {
+            resultMeta.textContent = `${raw.length.toLocaleString()} characters so far`;
+          } else {
+            streamToCode(raw);
+          }
+        } else if (msg.t === "live") {
+          // The server exposes this fusion as a chunked HTML stream — point the
+          // sandboxed iframe at it and the browser renders tags as they close.
+          liveAttached = true;
+          resultFrame.src = `/api/live/${msg.id}`;
         } else if (msg.t === "phase" && msg.phase === "paint") {
           resultStatus.textContent = "Painting…";
           resultMeta.textContent = msg.sourceImages
@@ -512,8 +523,10 @@ async function fuse() {
   } catch (err) {
     resultStatus.textContent = "That didn't work";
     resultMeta.textContent = err.message;
-    resultCode.classList.add("visible");
-    resultFrame.classList.remove("visible");
+    if (!raw) {
+      resultFrame.classList.remove("visible");
+      resultCode.classList.add("visible");
+    }
   } finally {
     fusing = false;
     fuseBtn.classList.remove("busy");
@@ -524,14 +537,12 @@ async function fuse() {
 
 /* ---------------- Result panel ---------------- */
 
-function openResultPanel() {
+function openResultPanel(mode) {
+  panelMode = mode;
   resultPanel.hidden = false;
   resultStatus.textContent = "Fusing…";
   resultMeta.textContent = "streaming from the model";
   resultCode.textContent = "";
-  resultCode.classList.add("visible");
-  resultFrame.classList.remove("visible");
-  resultFrame.removeAttribute("srcdoc");
   resultImageWrap.classList.remove("visible");
   resultImage.removeAttribute("src");
   resultDownload.hidden = true;
@@ -539,6 +550,16 @@ function openResultPanel() {
   lastArtifactHtml = "";
   lastImageDataUrl = "";
   resultKind = null;
+  liveAttached = false;
+  resultFrame.removeAttribute("srcdoc");
+  resultFrame.src = "about:blank";
+  if (mode === "html") {
+    resultFrame.classList.add("visible");
+    resultCode.classList.remove("visible");
+  } else {
+    resultFrame.classList.remove("visible");
+    resultCode.classList.add("visible");
+  }
 }
 
 function streamToCode(raw) {
@@ -568,7 +589,10 @@ function finishResult(raw, meta) {
   } else {
     resultKind = "html";
     lastArtifactHtml = extractHtml(raw);
-    resultFrame.srcdoc = lastArtifactHtml;
+    if (!liveAttached) {
+      // Live streaming never engaged — load the finished document directly.
+      resultFrame.srcdoc = lastArtifactHtml;
+    }
     resultFrame.classList.add("visible");
   }
   resultStatus.textContent = "Fused ✦";
