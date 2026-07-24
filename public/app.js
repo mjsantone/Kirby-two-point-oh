@@ -670,7 +670,15 @@ function generatedDiscoverTitle(source, fallback = "Untitled artifact") {
     ?.slice(0, 120) || fallback;
 }
 
-function sandboxStoredHtml(source, { hideScrollbars = false } = {}) {
+const ARTIFACT_VIEWER_INSET_STYLE = `<style data-fuse-viewer-inset>html>body{border-top:76px solid transparent!important}@media(max-width:480px){html>body{border-top-width:60px!important}}</style>`;
+
+function injectDocumentHead(source, content) {
+  if (/<head[\s>]/i.test(source)) return source.replace(/<head([^>]*)>/i, `<head$1>${content}`);
+  if (/<html[\s>]/i.test(source)) return source.replace(/<html([^>]*)>/i, `<html$1><head>${content}</head>`);
+  return `<!doctype html><html><head>${content}</head><body>${source}</body></html>`;
+}
+
+function sandboxStoredHtml(source, { hideScrollbars = false, viewerInset = false } = {}) {
   const policy = [
     "default-src 'none'",
     "script-src 'unsafe-inline'",
@@ -686,10 +694,8 @@ function sandboxStoredHtml(source, { hideScrollbars = false } = {}) {
   const previewStyle = hideScrollbars
     ? `<style data-fuse-preview>html,body{scrollbar-width:none}*::-webkit-scrollbar{display:none;width:0;height:0}</style>`
     : "";
-  const headContent = meta + previewStyle;
-  if (/<head[\s>]/i.test(source)) return source.replace(/<head([^>]*)>/i, `<head$1>${headContent}`);
-  if (/<html[\s>]/i.test(source)) return source.replace(/<html([^>]*)>/i, `<html$1><head>${headContent}</head>`);
-  return `<!doctype html><html><head>${headContent}</head><body>${source}</body></html>`;
+  const headContent = meta + previewStyle + (viewerInset ? ARTIFACT_VIEWER_INSET_STYLE : "");
+  return injectDocumentHead(source, headContent);
 }
 
 async function loadDiscoverPreview(frame, entry) {
@@ -1100,7 +1106,7 @@ function finishResult(raw, meta) {
     lastArtifactHtml = extractHtml(raw);
     if (!liveAttached) {
       // Live streaming never engaged — load the finished document directly.
-      resultFrame.srcdoc = lastArtifactHtml;
+      resultFrame.srcdoc = injectDocumentHead(lastArtifactHtml, ARTIFACT_VIEWER_INSET_STYLE);
     }
     resultFrame.classList.add("visible");
   }
@@ -1203,7 +1209,7 @@ async function openDiscoverEntry(item, { pushHistory = true } = {}) {
     try {
       const response = await fetch(item.contentUrl);
       if (!response.ok) throw new Error("Saved output unavailable.");
-      resultFrame.srcdoc = sandboxStoredHtml(await response.text(), { hideScrollbars: true });
+      resultFrame.srcdoc = sandboxStoredHtml(await response.text(), { hideScrollbars: true, viewerInset: true });
     } catch (err) {
       resultFrame.classList.remove("visible");
       resultCode.textContent = err.message;

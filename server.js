@@ -443,6 +443,7 @@ Visual direction — editorial Microsoft, interpreted at a high level:
 - Build on a disciplined grid and readable text measure. Keep sustained reading comfortably narrow; let only genuine hero moments break the grid, deliberately and sparingly.
 - Use a restrained neutral foundation with paired-tone accents. When colored elements carry text, combine a light tone with its dark counterpart; use middle tones only as standalone fills. Keep headings and body text neutral. Color clarifies hierarchy, category, and relationships — never mere decoration.
 - Compose information as a small narrative: frame data with context and a takeaway, create visual punctuation in longer pieces, and vary density to support the content. Avoid unbroken walls of prose, repetitive card grids, generic dashboard styling, and ornamental color.
+- Do not use left-edge borders, accent rails, or vertical bars as a decorative or hierarchy device on any element — including blockquotes, pull quotes, callouts, alerts, cards, panels, labels, and controls. Do not recreate the treatment with pseudo-elements. Use spacing, typography, full-width rules, or tonal surfaces instead.
 - Favor generous negative space, hairline rules, crisp geometry, accessible contrast, restrained imagery, and a few intentional expressive moments. Adapt the balance to the format: reports can feel editorial; games and tools should remain functional and interaction-first.
 - Treat this as design guidance, not a component library. Do not mention or reproduce named patterns, component specifications, class names, fixed dimensions, source templates, or external font requirements. Invent a fit-for-purpose composition using only self-contained HTML, CSS, and available system fonts.
 
@@ -706,6 +707,7 @@ app.get("/api/genimage", async (req, res) => {
 const liveStreams = new Map(); // id -> {chunks: [], done: boolean, waiters: Set<res>}
 const LIVE_TTL_MS = 10 * 60 * 1000;
 const LIVE_HOLDBACK = 8; // keep a small tail so a trailing ``` fence never renders
+const ARTIFACT_VIEWER_INSET_STYLE = `<style data-fuse-viewer-inset>html>body{border-top:76px solid transparent!important}@media(max-width:480px){html>body{border-top-width:60px!important}}</style>`;
 
 function createLiveStream() {
   const id = randomUUID();
@@ -738,12 +740,14 @@ function liveFeeder(s) {
     push(text) {
       raw += text;
       if (!started) {
-        const at = raw.search(/<!doctype html|<html[\s>]/i);
-        if (at >= 0) {
+        const marker = raw.match(/<!doctype html[^>]*>|<html(?:\s[^>]*)?>/i);
+        if (marker) {
           started = true;
-          sentLen = at;
+          sentLen = marker.index + marker[0].length;
+          livePush(s, raw.slice(marker.index, sentLen) + ARTIFACT_VIEWER_INSET_STYLE);
         } else if (raw.length > 3000) {
           started = true; // no marker in sight — stream as-is
+          livePush(s, ARTIFACT_VIEWER_INSET_STYLE);
         } else {
           return;
         }
