@@ -30,6 +30,9 @@
   --glass-background-strong: linear-gradient(180deg, rgba(44, 44, 44, 0.9), rgba(22, 22, 22, 0.86));
   --glass-border: rgba(255, 255, 255, 0.14);
   --glass-shadow: 0 14px 42px rgba(0, 0, 0, 0.34), inset 0 1px rgba(255, 255, 255, 0.08);
+  --motion-fast: 140ms;
+  --motion-standard: 200ms;
+  --motion-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 * {
@@ -53,6 +56,18 @@ button, input { font: inherit; }
 button:focus-visible, input:focus-visible {
   outline: 2px solid var(--gnrc-color-foreground-neutral-primary);
   outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .goo-defs { position: absolute; width: 0; height: 0; }
@@ -86,6 +101,7 @@ button:focus-visible, input:focus-visible {
   box-shadow: var(--glass-shadow);
   backdrop-filter: blur(24px) saturate(1.25);
   -webkit-backdrop-filter: blur(24px) saturate(1.25);
+  transition: border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
   pointer-events: auto;
 }
 
@@ -99,45 +115,41 @@ button:focus-visible, input:focus-visible {
 .brand-blobs i:nth-child(2) { background: var(--accent-2); margin-left: -5px; }
 .brand-blobs i:nth-child(3) { background: #ffd166; margin-left: -5px; }
 
-.counter {
-  font-variant-numeric: tabular-nums;
-  min-width: 44px;
-  padding: 7px 10px;
-  border: 1px solid var(--glass-border);
-  border-radius: var(--gnrc-border-radius-atomic-circular);
-  background: var(--glass-background);
-  box-shadow: var(--glass-shadow);
-  backdrop-filter: blur(24px) saturate(1.25);
-  -webkit-backdrop-filter: blur(24px) saturate(1.25);
-  color: var(--ink-dim);
-  font-size: 12px;
-  font-weight: 600;
-  text-align: center;
-  pointer-events: auto;
-}
-
-.top-actions {
+.view-toggle {
   display: flex;
   align-items: center;
-  gap: 8px;
-  pointer-events: auto;
-}
-
-.glass-nav-button {
-  min-height: 36px;
-  padding: 0 14px;
+  gap: 2px;
+  padding: 4px;
   border: 1px solid var(--glass-border);
   border-radius: var(--gnrc-border-radius-atomic-circular);
   background: var(--glass-background);
   box-shadow: var(--glass-shadow);
   backdrop-filter: blur(24px) saturate(1.25);
   -webkit-backdrop-filter: blur(24px) saturate(1.25);
-  color: var(--ink);
+  pointer-events: auto;
+}
+
+.view-toggle-button {
+  min-height: 34px;
+  padding: 0 13px;
+  border: 0;
+  border-radius: var(--gnrc-border-radius-atomic-circular);
+  background: transparent;
+  color: var(--ink-dim);
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
+  transition:
+    color var(--motion-fast) ease,
+    background-color var(--motion-fast) ease,
+    transform var(--motion-fast) var(--motion-ease);
 }
-.glass-nav-button:hover { background: rgba(64, 64, 64, 0.82); }
+.view-toggle-button:hover { color: var(--ink); background: rgba(255, 255, 255, 0.07); }
+.view-toggle-button:active { transform: scale(0.97); }
+.view-toggle-button.selected {
+  background: var(--gnrc-color-background-brand-loud);
+  color: var(--gnrc-color-foreground-brand-onloud);
+}
 
 /* ---------- Stage ---------- */
 
@@ -339,6 +351,9 @@ body.collapsing #content-layer { opacity: 0; }
   box-shadow: var(--glass-shadow);
   backdrop-filter: blur(28px) saturate(1.3);
   -webkit-backdrop-filter: blur(28px) saturate(1.3);
+  transition:
+    border-color var(--motion-fast) ease,
+    box-shadow var(--motion-standard) var(--motion-ease);
   overflow: visible;
   z-index: 30;
 }
@@ -365,6 +380,9 @@ body.collapsing #content-layer { opacity: 0; }
   text-align: center;
   z-index: 31;
 }
+.composer-toast:not([hidden]) {
+  animation: toast-reveal var(--motion-standard) var(--motion-ease) both;
+}
 
 .composer-menu-anchor {
   position: relative;
@@ -382,6 +400,10 @@ body.collapsing #content-layer { opacity: 0; }
   font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
+  transition:
+    color var(--motion-fast) ease,
+    background-color var(--motion-fast) ease,
+    transform var(--motion-fast) var(--motion-ease);
 }
 .composer-icon-button:hover,
 .type-menu-trigger:hover,
@@ -389,6 +411,8 @@ body.collapsing #content-layer { opacity: 0; }
 .type-menu-trigger[aria-expanded="true"] {
   background: rgba(255, 255, 255, 0.12);
 }
+.composer-icon-button:active,
+.type-menu-trigger:active { transform: scale(0.96); }
 
 .composer-icon-button {
   width: 44px;
@@ -400,7 +424,7 @@ body.collapsing #content-layer { opacity: 0; }
 .type-menu-trigger {
   max-width: 120px;
   min-width: 78px;
-  padding: 0 12px;
+  padding: 0 12px 0 16px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -445,6 +469,10 @@ body.collapsing #content-layer { opacity: 0; }
   -webkit-backdrop-filter: blur(28px) saturate(1.3);
   z-index: 50;
 }
+.composer-menu:not([hidden]) {
+  transform-origin: bottom center;
+  animation: menu-reveal var(--motion-fast) var(--motion-ease) both;
+}
 
 .type-menu {
   right: 0;
@@ -468,6 +496,7 @@ body.collapsing #content-layer { opacity: 0; }
   font-size: 13px;
   text-align: left;
   cursor: pointer;
+  transition: color var(--motion-fast) ease, background-color var(--motion-fast) ease;
 }
 .composer-menu button:hover,
 .composer-menu button:focus-visible {
@@ -508,6 +537,7 @@ body.collapsing #content-layer { opacity: 0; }
 .menu-check {
   color: var(--ink);
   opacity: 0;
+  transition: opacity var(--motion-fast) ease;
 }
 .otype.selected {
   background: rgba(255, 255, 255, 0.1);
@@ -559,13 +589,16 @@ body.collapsing #content-layer { opacity: 0; }
   scrollbar-color: var(--gnrc-color-background-neutral-loud) transparent;
   z-index: 35;
 }
+#discover-panel:not([hidden]) {
+  animation: surface-reveal var(--motion-standard) var(--motion-ease) both;
+}
 
 .discover-bar {
   position: sticky;
   top: 0;
   height: 76px;
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  display: flex;
+  justify-content: space-between;
   align-items: center;
   gap: 12px;
   padding: 14px 16px;
@@ -573,8 +606,8 @@ body.collapsing #content-layer { opacity: 0; }
   z-index: 4;
 }
 
-.discover-brand,
-.discover-location {
+.discover-brand {
+  height: 44px;
   min-height: 44px;
   border: 1px solid var(--glass-border);
   border-radius: var(--gnrc-border-radius-atomic-circular);
@@ -585,32 +618,17 @@ body.collapsing #content-layer { opacity: 0; }
 }
 
 .discover-brand {
-  justify-self: start;
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 0 16px;
   border-color: var(--glass-border);
   color: var(--ink);
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 600;
-  cursor: pointer;
   pointer-events: auto;
 }
-.discover-brand:hover { background: rgba(64, 64, 64, 0.82); }
-
-.discover-location {
-  justify-self: center;
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 0 15px;
-  color: var(--ink);
-  pointer-events: auto;
-}
-.discover-location strong { font-size: 14px; font-weight: 600; }
-#discover-count { color: var(--gnrc-color-foreground-neutral-tertiary); font-size: 12px; }
-.discover-bar > .glass-nav-button { justify-self: end; pointer-events: auto; }
+.discover-bar > .view-toggle { pointer-events: auto; }
 
 .discover-main {
   width: min(1480px, 100%);
@@ -628,6 +646,7 @@ body.collapsing #content-layer { opacity: 0; }
 
 .discover-card {
   min-width: 0;
+  animation: card-reveal 240ms var(--motion-ease) both;
 }
 
 .discover-preview {
@@ -718,16 +737,23 @@ body.collapsing #content-layer { opacity: 0; }
 }
 
 .discover-empty {
-  min-height: calc(100vh - 180px);
+  position: absolute;
+  inset: 0;
+  min-height: 0;
   display: grid;
   place-content: center;
   justify-items: center;
-  gap: 7px;
+  gap: 0;
   color: var(--gnrc-color-foreground-neutral-tertiary);
   font-size: 13px;
   text-align: center;
 }
-.discover-empty strong { color: var(--ink); font-size: 18px; font-weight: 600; }
+.discover-empty strong {
+  margin-bottom: 6px;
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 600;
+}
 .discover-empty button {
   margin-top: 8px;
   min-height: 36px;
@@ -752,6 +778,29 @@ body.collapsing #content-layer { opacity: 0; }
   border-radius: 0;
   overflow: hidden;
   box-shadow: none;
+}
+#result-panel:not([hidden]) {
+  animation: surface-reveal var(--motion-standard) var(--motion-ease) both;
+}
+
+@keyframes surface-reveal {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes menu-reveal {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes toast-reveal {
+  from { opacity: 0; transform: translate(-50%, 6px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+@keyframes card-reveal {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .result-head {
@@ -894,8 +943,8 @@ body.collapsing #content-layer { opacity: 0; }
   .topbar { inset: 10px 10px auto; height: 40px; }
   .brand { height: 40px; padding: 0 13px; font-size: 18px; }
   .brand-blobs i { width: 10px; height: 10px; }
-  .glass-nav-button { min-height: 34px; padding-inline: 11px; font-size: 12px; }
-  .counter { padding: 6px 9px; }
+  .view-toggle { padding: 3px; }
+  .view-toggle-button { min-height: 32px; padding-inline: 10px; font-size: 12px; }
   .controlbar {
     bottom: 10px;
     width: calc(100vw - 20px);
@@ -907,14 +956,13 @@ body.collapsing #content-layer { opacity: 0; }
   .composer-toast { bottom: 74px; }
   .composer-icon-button { width: 40px; height: 40px; }
   #directive { height: 40px; padding-inline: 6px; font-size: 13px; }
-  .type-menu-trigger { min-width: 66px; max-width: 90px; height: 40px; padding: 0 9px; font-size: 13px; }
+  .type-menu-trigger { min-width: 70px; max-width: 104px; height: 40px; padding: 0 9px 0 13px; font-size: 13px; }
   #fuse-btn { min-width: 70px; height: 40px; padding: 0 15px; font-size: 13px; }
   .composer-menu { bottom: calc(100% + 10px); }
   .type-menu { width: 168px; }
-  .discover-bar { height: 64px; padding: 10px; }
-  .discover-brand { min-height: 40px; padding-inline: 13px; font-size: 17px; }
-  .discover-location { min-height: 40px; padding-inline: 11px; }
-  .discover-main { min-height: calc(100vh - 64px); padding: 16px 12px 40px; }
+  .discover-bar { height: 60px; padding: 10px; }
+  .discover-brand { height: 40px; min-height: 40px; padding-inline: 13px; font-size: 18px; }
+  .discover-main { min-height: calc(100vh - 60px); padding: 16px 12px 40px; }
   .discover-grid, .discover-loading { gap: 20px; }
   .result-head { inset: 10px 10px auto; align-items: flex-start; gap: 8px; }
   .result-title { min-height: 40px; padding: 9px 11px; }

@@ -17,7 +17,6 @@ const stage = document.getElementById("stage");
 const gooLayer = document.getElementById("goo-layer");
 const contentLayer = document.getElementById("content-layer");
 const emptyState = document.getElementById("empty-state");
-const itemCount = document.getElementById("item-count");
 const toolbar = document.getElementById("blob-toolbar");
 const textEntry = document.getElementById("text-entry");
 const textEntryInput = document.getElementById("text-entry-input");
@@ -45,7 +44,6 @@ const discoverGrid = document.getElementById("discover-grid");
 const discoverLoading = document.getElementById("discover-loading");
 const discoverEmpty = document.getElementById("discover-empty");
 const discoverError = document.getElementById("discover-error");
-const discoverCount = document.getElementById("discover-count");
 
 let editingBlobId = null; // when the text entry is editing an existing blob
 let lastArtifactHtml = "";
@@ -138,7 +136,6 @@ function render() {
   }
 
   emptyState.classList.toggle("hidden", blobs.length > 0);
-  itemCount.textContent = blobs.length;
   fuseBtn.disabled = blobs.length === 0 || fusing;
   positionToolbar();
 }
@@ -704,12 +701,12 @@ function renderDiscoverItems() {
   discoverPreviewObserver?.disconnect();
   discoverPreviewObserver = null;
   discoverGrid.replaceChildren();
-  discoverCount.textContent = discoverItems.length ? `${discoverItems.length} saved` : "";
   discoverEmpty.hidden = discoverItems.length > 0;
 
-  for (const item of discoverItems) {
+  for (const [index, item] of discoverItems.entries()) {
     const card = document.createElement("article");
     card.className = "discover-card";
+    card.style.animationDelay = `${Math.min(index, 8) * 30}ms`;
 
     const preview = document.createElement("div");
     preview.className = "discover-preview";
@@ -766,7 +763,6 @@ async function loadDiscover() {
     discoverGrid.hidden = false;
   } catch (err) {
     console.error(err);
-    discoverCount.textContent = "";
     discoverError.hidden = false;
   } finally {
     discoverLoading.hidden = true;
@@ -778,7 +774,11 @@ function openDiscover({ pushHistory = true } = {}) {
   resultPanel.hidden = true;
   activeDiscoverEntry = null;
   closeComposerMenus();
+  document.querySelector(".topbar").inert = true;
+  stage.inert = true;
+  document.querySelector(".controlbar").inert = true;
   discoverPanel.hidden = false;
+  syncViewToggle("discover");
   document.title = "Discover — Fuse";
   if (pushHistory && location.pathname !== "/discover") {
     history.pushState({ view: "discover" }, "", "/discover");
@@ -788,15 +788,30 @@ function openDiscover({ pushHistory = true } = {}) {
 
 function closeDiscover({ pushHistory = true } = {}) {
   discoverPanel.hidden = true;
+  document.querySelector(".topbar").inert = false;
+  stage.inert = false;
+  document.querySelector(".controlbar").inert = false;
+  syncViewToggle("canvas");
   document.title = "Fuse — metaball mixer";
   if (pushHistory && location.pathname === "/discover") {
     history.pushState({ view: "canvas" }, "", "/");
   }
 }
 
-document.getElementById("discover-nav").addEventListener("click", () => openDiscover());
-document.getElementById("discover-brand").addEventListener("click", () => closeDiscover());
-document.getElementById("discover-close").addEventListener("click", () => closeDiscover());
+function syncViewToggle(view) {
+  document.querySelectorAll("[data-view-target]").forEach((button) => {
+    const selected = button.dataset.viewTarget === view;
+    button.classList.toggle("selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  });
+}
+
+document.querySelectorAll("[data-view-target]").forEach((button) => {
+  button.addEventListener("click", () => {
+    if (button.dataset.viewTarget === "discover") openDiscover();
+    else closeDiscover();
+  });
+});
 document.getElementById("discover-retry").addEventListener("click", loadDiscover);
 window.addEventListener("popstate", () => {
   if (location.pathname === "/discover") openDiscover({ pushHistory: false });

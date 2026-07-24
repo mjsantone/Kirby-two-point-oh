@@ -32,9 +32,9 @@
       <span class="brand-blobs" aria-hidden="true"><i></i><i></i><i></i></span>
       Fuse
     </div>
-    <div class="top-actions">
-      <button id="discover-nav" class="glass-nav-button" type="button">Discover</button>
-      <div class="counter"><span id="item-count">0</span>/5</div>
+    <div class="view-toggle" role="group" aria-label="View">
+      <button class="view-toggle-button selected" type="button" data-view-target="canvas" aria-pressed="true">Canvas</button>
+      <button class="view-toggle-button" type="button" data-view-target="discover" aria-pressed="false">Discover</button>
     </div>
   </header>
 
@@ -102,15 +102,15 @@
 
   <section id="discover-panel" aria-labelledby="discover-title" hidden>
     <header class="discover-bar">
-      <button id="discover-brand" class="discover-brand" type="button" aria-label="Return to canvas">
+      <div class="discover-brand">
         <span class="brand-blobs" aria-hidden="true"><i></i><i></i><i></i></span>
         Fuse
-      </button>
-      <div class="discover-location">
-        <strong id="discover-title">Discover</strong>
-        <span id="discover-count"></span>
       </div>
-      <button id="discover-close" class="glass-nav-button" type="button">Canvas</button>
+      <h1 id="discover-title" class="visually-hidden">Discover</h1>
+      <div class="view-toggle" role="group" aria-label="View">
+        <button class="view-toggle-button" type="button" data-view-target="canvas" aria-pressed="false">Canvas</button>
+        <button class="view-toggle-button selected" type="button" data-view-target="discover" aria-pressed="true">Discover</button>
+      </div>
     </header>
 
     <main class="discover-main">
