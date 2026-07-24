@@ -1,8 +1,10 @@
 import express from "express";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { Resvg } from "@resvg/resvg-js";
+import PImage from "pureimage";
 import Anthropic, { BadRequestError } from "@anthropic-ai/sdk";
 import {
   discoverStorageMode,
@@ -137,32 +139,122 @@ function shareAccent(id) {
   return palette[hash % palette.length];
 }
 
-function renderShareCard(item) {
+let shareFonts;
+
+function firstExisting(paths) {
+  return paths.find((candidate) => existsSync(candidate));
+}
+
+function getShareFonts() {
+  if (shareFonts !== undefined) return shareFonts;
+  const regularPath = firstExisting([
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+  ]);
+  const boldPath = firstExisting([
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+  ]);
+  const serifPath = firstExisting([
+    "/System/Library/Fonts/Supplemental/Georgia.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSerif-Regular.ttf",
+  ]);
+  if (!regularPath) {
+    shareFonts = null;
+    return shareFonts;
+  }
+  try {
+    PImage.registerFont(regularPath, "ShareSans").loadSync();
+    PImage.registerFont(boldPath || regularPath, "ShareBold").loadSync();
+    PImage.registerFont(serifPath || regularPath, "ShareSerif").loadSync();
+    shareFonts = { regular: "ShareSans", bold: "ShareBold", serif: "ShareSerif" };
+  } catch (err) {
+    console.warn("Share-card fonts unavailable:", err.message);
+    shareFonts = null;
+  }
+  return shareFonts;
+}
+
+function fillCircle(context, x, y, radius, color) {
+  context.fillStyle = color;
+  context.beginPath();
+  context.arc(x, y, radius, 0, Math.PI * 2);
+  context.fill();
+}
+
+function fillRoundedRect(context, x, y, width, height, radius, color) {
+  context.fillStyle = color;
+  context.fillRect(x + radius, y, width - radius * 2, height);
+  context.fillRect(x, y + radius, width, height - radius * 2);
+  fillCircle(context, x + radius, y + radius, radius, color);
+  fillCircle(context, x + width - radius, y + radius, radius, color);
+  fillCircle(context, x + radius, y + height - radius, radius, color);
+  fillCircle(context, x + width - radius, y + height - radius, radius, color);
+}
+
+async function encodeSharePng(image) {
+  const stream = new PassThrough();
+  const chunks = [];
+  stream.on("data", (chunk) => chunks.push(chunk));
+  const ended = new Promise((resolve, reject) => {
+    stream.on("end", resolve);
+    stream.on("error", reject);
+  });
+  await PImage.encodePNGToStream(image, stream);
+  await ended;
+  return Buffer.concat(chunks);
+}
+
+async function renderShareCard(item) {
   const lines = shareTitleLines(item.title);
   const accent = shareAccent(item.id);
-  const title = lines
-    .map((line, index) => `<tspan x="80" dy="${index === 0 ? 0 : 82}">${escapeMarkup(line)}</tspan>`)
-    .join("");
   const kind = item.kind === "image" ? "IMAGE" : "INTERACTIVE ARTIFACT";
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
-    <defs>
-      <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse"><path d="M48 0H0V48" fill="none" stroke="#292b2d" stroke-width="1"/></pattern>
-      <linearGradient id="surface" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#202223"/><stop offset="1" stop-color="#111213"/></linearGradient>
-    </defs>
-    <rect width="1200" height="630" fill="url(#surface)"/>
-    <rect width="1200" height="630" fill="url(#grid)"/>
-    <rect x="40" y="40" width="1120" height="550" rx="44" fill="#171819" fill-opacity=".92" stroke="#3d3f41"/>
-    <circle cx="84" cy="86" r="14" fill="#ff7ac3"/><circle cx="101" cy="86" r="14" fill="#7ae0ff"/><circle cx="118" cy="86" r="14" fill="#ffd166"/>
-    <text x="148" y="98" fill="#f5f5f5" font-family="Arial, sans-serif" font-size="34" font-weight="700">Fuse</text>
-    <rect x="80" y="158" width="64" height="8" rx="4" fill="${accent}"/>
-    <text x="80" y="270" fill="#f5f5f5" font-family="Georgia, serif" font-size="72" font-weight="400">${title}</text>
-    <text x="80" y="548" fill="#a9abad" font-family="Arial, sans-serif" font-size="20" font-weight="700" letter-spacing="4">${kind}</text>
-    <text x="1120" y="548" text-anchor="end" fill="${accent}" font-family="Arial, sans-serif" font-size="22" font-weight="700">Open in Fuse →</text>
-  </svg>`;
-  return new Resvg(svg, {
-    fitTo: { mode: "width", value: 1200 },
-    font: { loadSystemFonts: true, defaultFontFamily: "Arial" },
-  }).render().asPng();
+  const image = PImage.make(1200, 630);
+  const context = image.getContext("2d");
+
+  context.fillStyle = "#151718";
+  context.fillRect(0, 0, 1200, 630);
+  context.strokeStyle = "#292b2d";
+  context.lineWidth = 1;
+  context.beginPath();
+  for (let x = 0; x <= 1200; x += 48) { context.moveTo(x, 0); context.lineTo(x, 630); }
+  for (let y = 0; y <= 630; y += 48) { context.moveTo(0, y); context.lineTo(1200, y); }
+  context.stroke();
+  fillRoundedRect(context, 39, 39, 1122, 552, 45, "#3d3f41");
+  fillRoundedRect(context, 40, 40, 1120, 550, 44, "#171819");
+  fillCircle(context, 84, 86, 14, "#ff7ac3");
+  fillCircle(context, 101, 86, 14, "#7ae0ff");
+  fillCircle(context, 118, 86, 14, "#ffd166");
+  fillRoundedRect(context, 80, 158, 64, 8, 4, accent);
+
+  const fonts = getShareFonts();
+  if (fonts) {
+    context.fillStyle = "#f5f5f5";
+    context.font = `34px ${fonts.bold}`;
+    context.fillText("Fuse", 148, 98);
+    context.font = `72px ${fonts.serif}`;
+    lines.forEach((line, index) => context.fillText(line, 80, 270 + index * 82));
+    context.fillStyle = "#a9abad";
+    context.font = `20px ${fonts.bold}`;
+    context.fillText(kind, 80, 548);
+    context.fillStyle = accent;
+    context.font = `22px ${fonts.bold}`;
+    context.textAlign = "right";
+    context.fillText("Open in Fuse →", 1120, 548);
+    context.textAlign = "start";
+  } else {
+    fillRoundedRect(context, 148, 72, 78, 24, 12, "#f5f5f5");
+    lines.forEach((_line, index) => {
+      fillRoundedRect(context, 80, 218 + index * 82, 760 - index * 70, 54, 12, "#f5f5f5");
+    });
+    fillRoundedRect(context, 80, 526, 250, 20, 10, "#a9abad");
+    fillRoundedRect(context, 910, 526, 210, 20, 10, accent);
+  }
+
+  return encodeSharePng(image);
 }
 
 function decodeHtmlText(value) {
@@ -302,7 +394,7 @@ app.get("/api/discover/:id/share-card.png", async (req, res) => {
       if (stored.contentType.startsWith("text/html")) {
         item.title = generatedHtmlTitle(stored.content.toString("utf8")) || item.title;
       }
-      png = renderShareCard(item);
+      png = await renderShareCard(item);
       shareCardCache.set(id, png);
       if (shareCardCache.size > 100) shareCardCache.delete(shareCardCache.keys().next().value);
     }
