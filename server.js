@@ -629,6 +629,29 @@ function refusalMessage(finalMessage) {
   return `The model declined this request${category ? ` (${category})` : ""}. Try different ingredients or a different directive.`;
 }
 
+const CREDITS_EXHAUSTED_MESSAGE =
+  "You've spent all of Matthew's AI money. Message him to buy more credits — or ask him for his Zelle.";
+
+function isCreditsExhausted(err) {
+  const code = [err?.code, err?.type, err?.error?.code, err?.error?.type]
+    .filter(Boolean)
+    .join(" ");
+  const message = String(err?.message || err?.error?.message || "");
+  return /insufficient_quota|billing_hard_limit_reached|billing_not_active/i.test(code)
+    || /credit balance is too low|insufficient credits?|not enough credits?|purchase (?:more )?credits/i.test(message)
+    || /exceeded your current quota[\s\S]*billing/i.test(message);
+}
+
+function publicGenerationError(err) {
+  if (isCreditsExhausted(err)) return CREDITS_EXHAUSTED_MESSAGE;
+  if (err?.status === 401 || /authentication method|apiKey or authToken/i.test(String(err?.message))) {
+    return err?.provider === "openai"
+      ? "The server's OpenAI credentials aren't working — check OPENAI_API_KEY."
+      : "The server has no API credentials — set ANTHROPIC_API_KEY and restart.";
+  }
+  return err?.message || "Unexpected error.";
+}
+
 /* ---------------- OpenAI image generation ---------------- */
 
 async function generateImage(prompt, imageItems = [], size = "1024x1024") {
@@ -660,7 +683,13 @@ async function generateImage(prompt, imageItems = [], size = "1024x1024") {
   }
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
-    throw new Error(data?.error?.message || `Image generation failed (${r.status}).`);
+    const detail = data?.error || {};
+    const error = new Error(detail.message || `Image generation failed (${r.status}).`);
+    error.status = r.status;
+    error.code = detail.code;
+    error.type = detail.type;
+    error.provider = "openai";
+    throw error;
   }
   const b64 = data?.data?.[0]?.b64_json;
   if (!b64) throw new Error("The image API returned no image data.");
@@ -687,6 +716,7 @@ function genImageCached(prompt, size) {
 }
 
 const GEN_PLACEHOLDER_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512"><rect width="512" height="512" fill="#241b45"/><text x="256" y="248" fill="#8f83c9" font-family="sans-serif" font-size="22" text-anchor="middle">image unavailable</text><text x="256" y="282" fill="#5d5390" font-family="sans-serif" font-size="15" text-anchor="middle">generation failed</text></svg>`;
+const GEN_CREDITS_PLACEHOLDER_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512"><rect width="512" height="512" fill="#171819"/><circle cx="226" cy="166" r="25" fill="#ff7ac3"/><circle cx="256" cy="166" r="25" fill="#7ae0ff"/><circle cx="286" cy="166" r="25" fill="#ffd166"/><text x="256" y="246" fill="#f5f5f5" font-family="sans-serif" font-size="23" font-weight="700" text-anchor="middle">Matthew's AI money is gone.</text><text x="256" y="285" fill="#c7c7c7" font-family="sans-serif" font-size="17" text-anchor="middle">Message him for more credits</text><text x="256" y="312" fill="#c7c7c7" font-family="sans-serif" font-size="17" text-anchor="middle">or ask him for his Zelle.</text></svg>`;
 
 app.get("/api/genimage", async (req, res) => {
   const prompt = String(req.query.prompt || "").slice(0, 2000).trim();
@@ -703,7 +733,7 @@ app.get("/api/genimage", async (req, res) => {
     res.status(200); // non-2xx would render as a broken image inside artifacts
     res.setHeader("Content-Type", "image/svg+xml");
     res.setHeader("Cache-Control", "no-store");
-    res.send(GEN_PLACEHOLDER_SVG);
+    res.send(isCreditsExhausted(err) ? GEN_CREDITS_PLACEHOLDER_SVG : GEN_PLACEHOLDER_SVG);
   }
 });
 
@@ -950,10 +980,7 @@ app.post("/api/fuse", async (req, res) => {
     }
   } catch (err) {
     feeder?.finish();
-    const detail =
-      err?.status === 401 || /authentication method|apiKey or authToken/i.test(String(err?.message))
-        ? "The server has no API credentials — set ANTHROPIC_API_KEY and restart."
-        : err?.message || "Unexpected error.";
+    const detail = publicGenerationError(err);
     console.error("fuse error:", err);
     send(res, { t: "err", error: detail });
   } finally {
