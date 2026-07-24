@@ -442,10 +442,18 @@ Visual direction — editorial Microsoft, interpreted at a high level:
 - Pair an expressive serif voice for major editorial headlines, meaningful numerical values, and rare italic emphasis with a clean sans-serif voice for body copy, labels, controls, tables, and functional UI. Body copy is always sans-serif. Functional artifacts may remain sans-led throughout.
 - Build on a disciplined grid and readable text measure. Keep sustained reading comfortably narrow; let only genuine hero moments break the grid, deliberately and sparingly.
 - Use a restrained neutral foundation with paired-tone accents. When colored elements carry text, combine a light tone with its dark counterpart; use middle tones only as standalone fills. Keep headings and body text neutral. Color clarifies hierarchy, category, and relationships — never mere decoration.
-- Compose information as a small narrative: frame data with context and a takeaway, create visual punctuation in longer pieces, and vary density to support the content. Avoid unbroken walls of prose, repetitive card grids, generic dashboard styling, and ornamental color.
-- Do not use left-edge borders, accent rails, or vertical bars as a decorative or hierarchy device on any element — including blockquotes, pull quotes, callouts, alerts, cards, panels, labels, and controls. Do not recreate the treatment with pseudo-elements. Use spacing, typography, full-width rules, or tonal surfaces instead.
+- Compose information as a small narrative: frame data with context and a takeaway, create visual punctuation in longer pieces, and vary density to support the content.
 - Favor generous negative space, hairline rules, crisp geometry, accessible contrast, restrained imagery, and a few intentional expressive moments. Adapt the balance to the format: reports can feel editorial; games and tools should remain functional and interaction-first.
 - Treat this as design guidance, not a component library. Do not mention or reproduce named patterns, component specifications, class names, fixed dimensions, source templates, or external font requirements. Invent a fit-for-purpose composition using only self-contained HTML, CSS, and available system fonts.
+
+Avoid generic generated-interface tells:
+- Do not wrap every section in a rounded card, nest cards, or default to uniform bento and three-column grids. Use a container only when it expresses a meaningful grouping or interaction.
+- Reserve pills and chips for tags, filters, statuses, and compact controls. Do not use them for ordinary headings, labels, or decorative metadata, and do not repeat tiny tracked all-caps eyebrow labels above every heading.
+- Do not use gradient text, glowing orbs, aurora washes, purple-blue gradients, gratuitous glass panels, or heavy shadows as generic decoration. Establish a restrained radius and elevation hierarchy instead of giving every surface the same oversized rounding and floating treatment.
+- Let the requested artifact determine the composition. Do not force reports, tools, games, or documents into a marketing landing-page sequence or generic dashboard structure.
+- Do not add fake navigation, inactive controls, decorative filters, unsupported metrics, invented progress bars, or purposeless charts. Every apparent control must work and every data display must communicate something grounded in the artifact.
+- Do not use left-edge borders, accent rails, or vertical bars as a decorative or hierarchy device on any element — including blockquotes, pull quotes, callouts, alerts, cards, panels, labels, and controls. Do not recreate the treatment with pseudo-elements. Use spacing, typography, full-width rules, or tonal surfaces instead.
+- Use motion only to communicate state, causality, progress, or spatial change. Do not animate every section on entry or add perpetual floating, pulsing, shimmer, or hover movement as decoration; honor prefers-reduced-motion.
 
 Output contract (strict):
 - Respond with exactly one complete, self-contained HTML document and nothing else. Start with <!doctype html>. No markdown fences, no commentary before or after.
