@@ -11,6 +11,7 @@ let blobs = []; // {id, kind:'text'|'image', text?, dataUrl?, mediaType?, name?,
 let nextId = 1;
 let selectedId = null;
 let fusing = false;
+let hintTimer = null;
 
 const stage = document.getElementById("stage");
 const gooLayer = document.getElementById("goo-layer");
@@ -23,6 +24,11 @@ const textEntryInput = document.getElementById("text-entry-input");
 const fuseBtn = document.getElementById("fuse-btn");
 const directiveInput = document.getElementById("directive");
 const fileInput = document.getElementById("file-input");
+const addMenuTrigger = document.getElementById("add-menu-trigger");
+const addMenu = document.getElementById("add-menu");
+const typeMenuTrigger = document.getElementById("type-menu-trigger");
+const typeMenu = document.getElementById("type-menu");
+const selectedTypeLabel = document.getElementById("selected-type-label");
 
 const resultPanel = document.getElementById("result-panel");
 const resultStatus = document.getElementById("result-status");
@@ -31,8 +37,15 @@ const resultCode = document.getElementById("result-code");
 const resultFrame = document.getElementById("result-frame");
 const resultDownload = document.getElementById("result-download");
 const resultRemix = document.getElementById("result-remix");
+const resultSave = document.getElementById("result-save");
 const resultImageWrap = document.getElementById("result-image-wrap");
 const resultImage = document.getElementById("result-image");
+const discoverPanel = document.getElementById("discover-panel");
+const discoverGrid = document.getElementById("discover-grid");
+const discoverLoading = document.getElementById("discover-loading");
+const discoverEmpty = document.getElementById("discover-empty");
+const discoverError = document.getElementById("discover-error");
+const discoverCount = document.getElementById("discover-count");
 
 let editingBlobId = null; // when the text entry is editing an existing blob
 let lastArtifactHtml = "";
@@ -40,6 +53,9 @@ let lastImageDataUrl = "";
 let resultKind = null; // 'html' | 'image'
 let panelMode = "html"; // what this fuse run is producing: 'html' | 'image'
 let liveAttached = false; // iframe is following the server's live HTML stream
+let activeDiscoverEntry = null;
+let discoverItems = [];
+let discoverPreviewObserver = null;
 
 /* ---------------- Rendering ---------------- */
 
@@ -69,6 +85,7 @@ function render() {
         r: b.r,
         color: b.color,
         dataUrl: b.kind === "image" ? b.dataUrl : null,
+        dragging: dragState?.id === b.id && dragState.moved,
       }))
     );
   }
@@ -133,28 +150,47 @@ function positionToolbar() {
     return;
   }
   toolbar.hidden = false;
+  const stageRect = stage.getBoundingClientRect();
+  const topbarRect = document.querySelector(".topbar").getBoundingClientRect();
+  const safeTop = topbarRect.bottom - stageRect.top + 8;
   toolbar.style.left = b.x + "px";
-  toolbar.style.top = Math.max(4, b.y - b.r - 46) + "px";
+  toolbar.style.top = Math.max(safeTop, b.y - b.r - 46) + "px";
   document.getElementById("tb-edit").style.display = b.kind === "text" ? "" : "none";
 }
 
 /* ---------------- Blob CRUD ---------------- */
 
+function blobPositionBounds(r, stageRect = stage.getBoundingClientRect()) {
+  const topbarRect = document.querySelector(".topbar").getBoundingClientRect();
+  const controlbarRect = document.querySelector(".controlbar").getBoundingClientRect();
+  const edge = 12;
+  const minX = r + edge;
+  const maxX = Math.max(minX, stageRect.width - r - edge);
+  const minY = Math.max(r + edge, topbarRect.bottom - stageRect.top + r + edge);
+  const maxY = Math.max(
+    minY,
+    Math.min(stageRect.height - r - edge, controlbarRect.top - stageRect.top - r - edge)
+  );
+  return { minX, maxX, minY, maxY };
+}
+
 function stageCenterSpot(r = 70) {
   // Sample candidate spots and keep the one farthest from existing blobs,
   // so new ingredients spread out instead of stacking at center.
   const rect = stage.getBoundingClientRect();
-  const margin = r + 24;
-  let best = { x: rect.width / 2, y: rect.height / 2 };
+  const bounds = blobPositionBounds(r, rect);
+  const centerX = (bounds.minX + bounds.maxX) / 2;
+  const centerY = (bounds.minY + bounds.maxY) / 2;
+  let best = { x: centerX, y: centerY };
   let bestScore = -Infinity;
   for (let i = 0; i < 40; i++) {
-    const x = margin + Math.random() * Math.max(1, rect.width - margin * 2);
-    const y = margin + Math.random() * Math.max(1, rect.height - margin * 2);
+    const x = bounds.minX + Math.random() * Math.max(1, bounds.maxX - bounds.minX);
+    const y = bounds.minY + Math.random() * Math.max(1, bounds.maxY - bounds.minY);
     const nearest = blobs.length
       ? Math.min(...blobs.map((b) => Math.hypot(x - b.x, y - b.y) - b.r))
       : Infinity;
     // Prefer clear space, but don't wander into far corners when the stage is empty
-    const centerPull = -0.25 * Math.hypot(x - rect.width / 2, y - rect.height / 2);
+    const centerPull = -0.25 * Math.hypot(x - centerX, y - centerY);
     const score = Math.min(nearest, 260) + centerPull;
     if (score > bestScore) {
       bestScore = score;
@@ -169,7 +205,13 @@ function addBlob(partial) {
     flashHint(`Max ${MAX_ITEMS} ingredients — remove one first.`);
     return null;
   }
-  const spot = partial.x != null ? { x: partial.x, y: partial.y } : stageCenterSpot(partial.r || 70);
+  const radius = partial.r || 70;
+  const requestedSpot = partial.x != null ? { x: partial.x, y: partial.y } : stageCenterSpot(radius);
+  const bounds = blobPositionBounds(radius);
+  const spot = {
+    x: Math.min(bounds.maxX, Math.max(bounds.minX, requestedSpot.x)),
+    y: Math.min(bounds.maxY, Math.max(bounds.minY, requestedSpot.y)),
+  };
   const b = {
     id: nextId++,
     r: 70,
@@ -199,12 +241,12 @@ function resizeBlob(id, delta) {
 
 function flashHint(msg) {
   const hint = document.getElementById("hint");
-  const prev = hint.textContent;
   hint.textContent = msg;
-  hint.style.color = "#ffd166";
-  setTimeout(() => {
-    hint.textContent = prev;
-    hint.style.color = "";
+  hint.hidden = false;
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => {
+    hint.hidden = true;
+    hint.textContent = "";
   }, 2600);
 }
 
@@ -244,7 +286,76 @@ textEntryInput.addEventListener("keydown", (e) => {
 });
 textEntryInput.addEventListener("blur", () => setTimeout(closeTextEntry, 150));
 
+const composerMenus = [
+  { trigger: addMenuTrigger, menu: addMenu },
+  { trigger: typeMenuTrigger, menu: typeMenu },
+];
+
+function closeComposerMenus(exceptMenu = null) {
+  for (const { trigger, menu } of composerMenus) {
+    if (menu === exceptMenu) continue;
+    menu.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+  }
+}
+
+function setComposerMenuOpen(trigger, menu, open, focusEdge = null) {
+  if (open) closeComposerMenus(menu);
+  menu.hidden = !open;
+  trigger.setAttribute("aria-expanded", String(open));
+  if (open && focusEdge) {
+    const items = [...menu.querySelectorAll('[role^="menuitem"]')];
+    items[focusEdge === "last" ? items.length - 1 : 0]?.focus();
+  }
+}
+
+function setupComposerMenu(trigger, menu) {
+  const menuItems = [...menu.querySelectorAll('[role^="menuitem"]')];
+  menuItems.forEach((item) => { item.tabIndex = -1; });
+  trigger.addEventListener("click", () => {
+    setComposerMenuOpen(trigger, menu, menu.hidden);
+  });
+  trigger.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !menu.hidden) {
+      e.preventDefault();
+      setComposerMenuOpen(trigger, menu, false);
+      return;
+    }
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    e.preventDefault();
+    setComposerMenuOpen(trigger, menu, true, e.key === "ArrowUp" ? "last" : "first");
+  });
+  menu.addEventListener("keydown", (e) => {
+    const index = menuItems.indexOf(document.activeElement);
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setComposerMenuOpen(trigger, menu, false);
+      trigger.focus();
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const step = e.key === "ArrowDown" ? 1 : -1;
+      menuItems[(index + step + menuItems.length) % menuItems.length]?.focus();
+    } else if (e.key === "Home" || e.key === "End") {
+      e.preventDefault();
+      menuItems[e.key === "Home" ? 0 : menuItems.length - 1]?.focus();
+    }
+  });
+  trigger.parentElement.addEventListener("focusout", () => {
+    setTimeout(() => {
+      if (!trigger.parentElement.contains(document.activeElement)) {
+        setComposerMenuOpen(trigger, menu, false);
+      }
+    }, 0);
+  });
+}
+
+composerMenus.forEach(({ trigger, menu }) => setupComposerMenu(trigger, menu));
+document.addEventListener("pointerdown", (e) => {
+  if (!e.target.closest(".composer-menu-anchor")) closeComposerMenus();
+});
+
 document.getElementById("add-text").addEventListener("click", () => {
+  closeComposerMenus();
   if (blobs.length >= MAX_ITEMS) return flashHint(`Max ${MAX_ITEMS} ingredients.`);
   const rect = stage.getBoundingClientRect();
   openTextEntry(rect.width / 2, rect.height / 2, null);
@@ -252,7 +363,10 @@ document.getElementById("add-text").addEventListener("click", () => {
 
 /* ---------------- Images ---------------- */
 
-document.getElementById("add-image").addEventListener("click", () => fileInput.click());
+document.getElementById("add-image").addEventListener("click", () => {
+  closeComposerMenus();
+  fileInput.click();
+});
 fileInput.addEventListener("change", () => {
   addImageFiles([...fileInput.files]);
   fileInput.value = "";
@@ -354,6 +468,45 @@ window.addEventListener("drop", (e) => {
   addImageFiles([...e.dataTransfer.files], e.clientX - rect.left, e.clientY - rect.top);
 });
 
+window.addEventListener("paste", (e) => {
+  if (!resultPanel.hidden || !e.clipboardData) return;
+
+  const clipboardItems = [...e.clipboardData.items];
+  const itemImages = clipboardItems
+    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+    .map((item) => item.getAsFile())
+    .filter(Boolean);
+  const imageFiles = itemImages.length
+    ? itemImages
+    : [...e.clipboardData.files].filter((file) => file.type.startsWith("image/"));
+
+  if (imageFiles.length) {
+    e.preventDefault();
+    closeComposerMenus();
+    addImageFiles(imageFiles);
+    return;
+  }
+
+  const target = e.target;
+  const isEditable = target instanceof Element && Boolean(
+    target.closest('input, textarea, [contenteditable="true"]')
+  );
+  if (isEditable) return;
+
+  const pastedText = e.clipboardData.getData("text/plain").trim();
+  if (!pastedText) return;
+
+  e.preventDefault();
+  closeComposerMenus();
+  if (blobs.length >= MAX_ITEMS) {
+    flashHint(`Max ${MAX_ITEMS} ingredients.`);
+    return;
+  }
+
+  addBlob({ kind: "text", text: pastedText.slice(0, 300) });
+  if (pastedText.length > 300) flashHint("Pasted text was trimmed to 300 characters.");
+});
+
 /* ---------------- Pointer interactions ---------------- */
 
 let dragState = null; // {id, offsetX, offsetY, moved}
@@ -383,8 +536,9 @@ contentLayer.addEventListener("pointermove", (e) => {
   const ny = e.clientY - rect.top - dragState.offsetY;
   if (!dragState.moved && Math.hypot(nx - b.x, ny - b.y) > 4) dragState.moved = true;
   if (dragState.moved) {
-    b.x = Math.min(rect.width - 20, Math.max(20, nx));
-    b.y = Math.min(rect.height - 20, Math.max(20, ny));
+    const bounds = blobPositionBounds(b.r, rect);
+    b.x = Math.min(bounds.maxX, Math.max(bounds.minX, nx));
+    b.y = Math.min(bounds.maxY, Math.max(bounds.minY, ny));
     render();
   }
 });
@@ -395,8 +549,8 @@ contentLayer.addEventListener("pointerup", (e) => {
   dragState = null;
   if (!moved) {
     selectedId = selectedId === id ? null : id;
-    render();
   }
+  render();
 });
 
 /* Click empty stage clears selection */
@@ -448,9 +602,18 @@ window.addEventListener("keydown", (e) => {
 let outputType = "auto";
 document.querySelectorAll(".otype").forEach((btn) => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".otype").forEach((b) => b.classList.remove("selected"));
+    document.querySelectorAll(".otype").forEach((b) => {
+      b.classList.remove("selected");
+      b.setAttribute("aria-checked", "false");
+    });
     btn.classList.add("selected");
+    btn.setAttribute("aria-checked", "true");
     outputType = btn.dataset.type;
+    const label = btn.firstChild.textContent.trim();
+    selectedTypeLabel.textContent = label;
+    typeMenuTrigger.setAttribute("aria-label", `Output type: ${label}`);
+    closeComposerMenus();
+    directiveInput.focus();
   });
 });
 
@@ -477,6 +640,168 @@ function computeClusters() {
   });
   return [...groups.values()];
 }
+
+/* ---------------- Discover ---------------- */
+
+function formatDiscoverDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Saved output";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: date.getFullYear() === new Date().getFullYear() ? undefined : "numeric",
+  }).format(date);
+}
+
+function discoverKindLabel(item) {
+  if (item.kind === "image") return "Image";
+  return item.outputType && item.outputType !== "auto" ? item.outputType : "Artifact";
+}
+
+function sandboxStoredHtml(source) {
+  const policy = [
+    "default-src 'none'",
+    "script-src 'unsafe-inline'",
+    "style-src 'unsafe-inline'",
+    "img-src data: blob:",
+    "media-src data: blob:",
+    "font-src data:",
+    "connect-src 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
+  ].join("; ");
+  const meta = `<meta http-equiv="Content-Security-Policy" content="${policy}">`;
+  if (/<head[\s>]/i.test(source)) return source.replace(/<head([^>]*)>/i, `<head$1>${meta}`);
+  if (/<html[\s>]/i.test(source)) return source.replace(/<html([^>]*)>/i, `<html$1><head>${meta}</head>`);
+  return `<!doctype html><html><head>${meta}</head><body>${source}</body></html>`;
+}
+
+function observeDiscoverPreview(frame, item) {
+  if (!discoverPreviewObserver) {
+    discoverPreviewObserver = new IntersectionObserver(
+      (entries, observer) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          observer.unobserve(entry.target);
+          const previewFrame = entry.target;
+          fetch(previewFrame.dataset.contentUrl)
+            .then((response) => {
+              if (!response.ok) throw new Error("preview unavailable");
+              return response.text();
+            })
+            .then((html) => { previewFrame.srcdoc = sandboxStoredHtml(html); })
+            .catch(() => { previewFrame.dataset.failed = "true"; });
+        }
+      },
+      { root: discoverPanel, rootMargin: "400px 0px" }
+    );
+  }
+  frame.dataset.contentUrl = item.contentUrl;
+  discoverPreviewObserver.observe(frame);
+}
+
+function renderDiscoverItems() {
+  discoverPreviewObserver?.disconnect();
+  discoverPreviewObserver = null;
+  discoverGrid.replaceChildren();
+  discoverCount.textContent = discoverItems.length ? `${discoverItems.length} saved` : "";
+  discoverEmpty.hidden = discoverItems.length > 0;
+
+  for (const item of discoverItems) {
+    const card = document.createElement("article");
+    card.className = "discover-card";
+
+    const preview = document.createElement("div");
+    preview.className = "discover-preview";
+    if (item.kind === "image") {
+      const image = document.createElement("img");
+      image.src = item.contentUrl;
+      image.alt = "";
+      image.loading = "lazy";
+      preview.appendChild(image);
+    } else {
+      const frame = document.createElement("iframe");
+      frame.title = `Preview of ${item.title}`;
+      frame.tabIndex = -1;
+      frame.setAttribute("sandbox", "allow-scripts");
+      preview.appendChild(frame);
+      observeDiscoverPreview(frame, item);
+    }
+
+    const openButton = document.createElement("button");
+    openButton.type = "button";
+    openButton.className = "discover-card-open";
+    openButton.setAttribute("aria-label", `Open ${item.title}`);
+    openButton.addEventListener("click", () => openDiscoverEntry(item));
+    preview.appendChild(openButton);
+
+    const metadata = document.createElement("div");
+    metadata.className = "discover-card-meta";
+    const title = document.createElement("h2");
+    title.textContent = item.title;
+    const kind = document.createElement("span");
+    kind.className = "discover-kind";
+    kind.textContent = discoverKindLabel(item);
+    const date = document.createElement("span");
+    date.className = "discover-date";
+    date.textContent = formatDiscoverDate(item.createdAt);
+    metadata.append(title, kind, date);
+
+    card.append(preview, metadata);
+    discoverGrid.appendChild(card);
+  }
+}
+
+async function loadDiscover() {
+  discoverLoading.hidden = false;
+  discoverGrid.hidden = true;
+  discoverEmpty.hidden = true;
+  discoverError.hidden = true;
+  try {
+    const response = await fetch("/api/discover?limit=48", { cache: "no-store" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "Discover couldn't load.");
+    discoverItems = Array.isArray(payload.items) ? payload.items : [];
+    renderDiscoverItems();
+    discoverGrid.hidden = false;
+  } catch (err) {
+    console.error(err);
+    discoverCount.textContent = "";
+    discoverError.hidden = false;
+  } finally {
+    discoverLoading.hidden = true;
+  }
+}
+
+function openDiscover({ pushHistory = true } = {}) {
+  clearTimeout(panelRevealTimer);
+  resultPanel.hidden = true;
+  activeDiscoverEntry = null;
+  closeComposerMenus();
+  discoverPanel.hidden = false;
+  document.title = "Discover — Fuse";
+  if (pushHistory && location.pathname !== "/discover") {
+    history.pushState({ view: "discover" }, "", "/discover");
+  }
+  loadDiscover();
+}
+
+function closeDiscover({ pushHistory = true } = {}) {
+  discoverPanel.hidden = true;
+  document.title = "Fuse — metaball mixer";
+  if (pushHistory && location.pathname === "/discover") {
+    history.pushState({ view: "canvas" }, "", "/");
+  }
+}
+
+document.getElementById("discover-nav").addEventListener("click", () => openDiscover());
+document.getElementById("discover-brand").addEventListener("click", () => closeDiscover());
+document.getElementById("discover-close").addEventListener("click", () => closeDiscover());
+document.getElementById("discover-retry").addEventListener("click", loadDiscover);
+window.addEventListener("popstate", () => {
+  if (location.pathname === "/discover") openDiscover({ pushHistory: false });
+  else closeDiscover({ pushHistory: false });
+});
 
 /* ---------------- Fuse ---------------- */
 
@@ -619,6 +944,7 @@ function showResultPanel() {
 }
 
 function openResultPanel(mode) {
+  activeDiscoverEntry = null;
   panelMode = mode;
   clearTimeout(panelRevealTimer);
   if (window.Stage3D?.active) {
@@ -635,6 +961,9 @@ function openResultPanel(mode) {
   resultImage.removeAttribute("src");
   resultDownload.hidden = true;
   resultRemix.hidden = true;
+  resultSave.hidden = true;
+  resultSave.disabled = false;
+  resultSave.textContent = "Save";
   lastArtifactHtml = "";
   lastImageDataUrl = "";
   resultKind = null;
@@ -694,44 +1023,159 @@ function finishResult(raw, meta) {
   resultDownload.textContent = resultKind === "image" ? "Download .png" : "Download .html";
   resultDownload.hidden = false;
   resultRemix.hidden = false;
+  resultSave.hidden = false;
+  resultSave.disabled = false;
+  resultSave.textContent = "Save";
 }
 
-resultDownload.addEventListener("click", async () => {
-  const a = document.createElement("a");
-  if (resultKind === "image") {
-    a.href = lastImageDataUrl;
-    a.download = "fusion.png";
-    a.click();
-  } else {
-    // Inline any generated illustrations so the .html stays self-contained
-    let html = lastArtifactHtml;
-    const urls = [...new Set(html.match(/\/api\/genimage\?[^"'\s)>]+/g) || [])];
-    for (const u of urls.slice(0, 8)) {
-      try {
-        const r = await fetch(u.replace(/&amp;/g, "&"));
-        if (!r.ok) continue;
-        const blob = await r.blob();
-        const dataUrl = await new Promise((ok) => {
-          const fr = new FileReader();
-          fr.onload = () => ok(fr.result);
-          fr.readAsDataURL(blob);
-        });
-        html = html.split(u).join(dataUrl);
-      } catch {
-        /* leave the URL in place */
-      }
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function materializeArtifactHtml(source) {
+  let html = source;
+  const urls = [...new Set(html.match(/\/api\/genimage\?[^"'\s)>]+/g) || [])];
+  for (const url of urls.slice(0, 8)) {
+    try {
+      const response = await fetch(url.replace(/&amp;/g, "&"));
+      if (!response.ok) continue;
+      const dataUrl = await blobToDataUrl(await response.blob());
+      html = html.split(url).join(dataUrl);
+    } catch {
+      /* Leave the endpoint URL in place when an illustration can't be materialized. */
     }
-    const blob = new Blob([html], { type: "text/html" });
-    a.href = URL.createObjectURL(blob);
-    a.download = "fusion.html";
-    a.click();
-    URL.revokeObjectURL(a.href);
+  }
+  return html;
+}
+
+function discoverDownloadName(item) {
+  const base = (item?.title || "fusion")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 60) || "fusion";
+  return `${base}.${item?.kind === "image" ? "png" : "html"}`;
+}
+
+function downloadBlob(blob, name) {
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 0);
+}
+
+async function openDiscoverEntry(item) {
+  clearTimeout(panelRevealTimer);
+  activeDiscoverEntry = item;
+  resultPanel.hidden = false;
+  document.title = `${item.title} — Fuse`;
+  resultKind = item.kind;
+  lastArtifactHtml = "";
+  lastImageDataUrl = "";
+  liveAttached = false;
+  resultStatus.textContent = item.title;
+  resultMeta.textContent = `${discoverKindLabel(item)} · ${formatDiscoverDate(item.createdAt)}`;
+  resultCode.classList.remove("visible");
+  resultFrame.classList.remove("visible");
+  resultImageWrap.classList.remove("visible");
+  resultImage.removeAttribute("src");
+  resultFrame.removeAttribute("srcdoc");
+  resultFrame.src = "about:blank";
+  resultSave.hidden = true;
+  resultRemix.hidden = false;
+  resultDownload.hidden = false;
+  resultDownload.textContent = item.kind === "image" ? "Download .png" : "Download .html";
+  if (item.kind === "image") {
+    resultImage.src = item.contentUrl;
+    resultImageWrap.classList.add("visible");
+  } else {
+    resultFrame.classList.add("visible");
+    try {
+      const response = await fetch(item.contentUrl);
+      if (!response.ok) throw new Error("Saved output unavailable.");
+      resultFrame.srcdoc = sandboxStoredHtml(await response.text());
+    } catch (err) {
+      resultFrame.classList.remove("visible");
+      resultCode.textContent = err.message;
+      resultCode.classList.add("visible");
+    }
+  }
+}
+
+resultSave.addEventListener("click", async () => {
+  if (resultSave.disabled || !resultKind) return;
+  resultSave.disabled = true;
+  resultSave.textContent = "Saving…";
+  try {
+    const directive = directiveInput.value.trim();
+    const content = resultKind === "image"
+      ? lastImageDataUrl
+      : await materializeArtifactHtml(lastArtifactHtml);
+    const response = await fetch("/api/discover", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: directive || (resultKind === "image" ? "Untitled image" : "Untitled artifact"),
+        kind: resultKind,
+        directive,
+        outputType,
+        content,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "Couldn't save this output.");
+    discoverItems = [payload.item, ...discoverItems.filter((item) => item.id !== payload.item.id)];
+    resultSave.textContent = "Saved";
+  } catch (err) {
+    resultSave.disabled = false;
+    resultSave.textContent = "Save";
+    resultMeta.textContent = err.message;
   }
 });
 
-resultRemix.addEventListener("click", () => {
+resultDownload.addEventListener("click", async () => {
+  if (activeDiscoverEntry) {
+    const response = await fetch(activeDiscoverEntry.contentUrl);
+    if (!response.ok) return;
+    downloadBlob(await response.blob(), discoverDownloadName(activeDiscoverEntry));
+  } else if (resultKind === "image") {
+    downloadBlob(await fetch(lastImageDataUrl).then((response) => response.blob()), "fusion.png");
+  } else {
+    const html = await materializeArtifactHtml(lastArtifactHtml);
+    downloadBlob(new Blob([html], { type: "text/html" }), "fusion.html");
+  }
+});
+
+resultRemix.addEventListener("click", async () => {
   if (blobs.length >= MAX_ITEMS) return flashHint(`Max ${MAX_ITEMS} ingredients — remove one first.`);
-  const label = (directiveInput.value.trim() || "fusion").slice(0, 40);
+  const label = (activeDiscoverEntry?.title || directiveInput.value.trim() || "fusion").slice(0, 40);
+  if (activeDiscoverEntry) {
+    const response = await fetch(activeDiscoverEntry.contentUrl);
+    if (!response.ok) return;
+    if (activeDiscoverEntry.kind === "image") {
+      const imageBlob = await response.blob();
+      addBlob({
+        kind: "image",
+        dataUrl: await blobToDataUrl(imageBlob),
+        mediaType: imageBlob.type || "image/png",
+        name: discoverDownloadName(activeDiscoverEntry),
+        r: 85,
+      });
+    } else {
+      addBlob({ kind: "artifact", html: await response.text(), label, r: 80 });
+    }
+    activeDiscoverEntry = null;
+    resultPanel.hidden = true;
+    closeDiscover();
+    render();
+    return;
+  }
   if (resultKind === "image" && lastImageDataUrl) {
     addBlob({
       kind: "image",
@@ -748,7 +1192,10 @@ resultRemix.addEventListener("click", () => {
 });
 
 document.getElementById("result-close").addEventListener("click", () => {
+  const returningToDiscover = Boolean(activeDiscoverEntry);
   resultPanel.hidden = true;
+  activeDiscoverEntry = null;
+  document.title = returningToDiscover ? "Discover — Fuse" : "Fuse — metaball mixer";
 });
 
 /* ---------------- Init ---------------- */
@@ -756,3 +1203,4 @@ document.getElementById("result-close").addEventListener("click", () => {
 window.addEventListener("resize", render);
 window.addEventListener("stage3d-ready", render);
 render();
+if (location.pathname === "/discover") openDiscover({ pushHistory: false });

@@ -32,10 +32,10 @@
       <span class="brand-blobs" aria-hidden="true"><i></i><i></i><i></i></span>
       Fuse
     </div>
-    <div class="hint" id="hint">
-      Drop images or add text · drag to arrange · scroll on a blob to grow its influence
+    <div class="top-actions">
+      <button id="discover-nav" class="glass-nav-button" type="button">Discover</button>
+      <div class="counter"><span id="item-count">0</span>/5</div>
     </div>
-    <div class="counter"><span id="item-count">0</span>/5</div>
   </header>
 
   <main id="stage" aria-label="Ingredient canvas">
@@ -43,17 +43,17 @@
     <div id="content-layer"></div>
 
     <div id="empty-state">
-      <p>Your canvas is empty.</p>
-      <p>Add up to <strong>5 ingredients</strong> — words, phrases, pictures — then fuse them into something new.</p>
+      <p>No ingredients yet</p>
+      <p>Add text or an image below to begin.</p>
     </div>
 
     <div id="drop-veil">Drop images to add them</div>
 
     <div id="blob-toolbar" hidden>
-      <button id="tb-grow" title="More influence">＋</button>
-      <button id="tb-shrink" title="Less influence">－</button>
-      <button id="tb-edit" title="Edit text">✎</button>
-      <button id="tb-delete" title="Remove">✕</button>
+      <button id="tb-grow" type="button" title="More influence" aria-label="More influence">+</button>
+      <button id="tb-shrink" type="button" title="Less influence" aria-label="Less influence">−</button>
+      <button id="tb-edit" type="button" title="Edit text" aria-label="Edit text">✎</button>
+      <button id="tb-delete" type="button" title="Remove" aria-label="Remove">×</button>
     </div>
 
     <form id="text-entry" hidden>
@@ -62,29 +62,72 @@
     </form>
   </main>
 
-  <footer class="controlbar">
-    <div class="adders">
-      <button id="add-text" class="chip-btn">＋ Text</button>
-      <button id="add-image" class="chip-btn">＋ Image</button>
+  <div id="hint" class="composer-toast" role="status" aria-live="polite" hidden></div>
+
+  <footer class="controlbar" aria-label="Create a fusion">
+    <div class="composer-menu-anchor">
+      <button id="add-menu-trigger" class="composer-icon-button" type="button"
+              aria-label="Add ingredient" aria-haspopup="menu" aria-expanded="false"
+              aria-controls="add-menu">+</button>
+      <div id="add-menu" class="composer-menu add-menu" role="menu" hidden>
+        <button id="add-text" type="button" role="menuitem"><span aria-hidden="true">T</span>Text</button>
+        <button id="add-image" type="button" role="menuitem"><span aria-hidden="true">▧</span>Image</button>
+      </div>
       <input id="file-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
     </div>
 
-    <div class="directive-wrap">
-      <input id="directive" type="text" maxlength="500" autocomplete="off"
-             placeholder="make this into… (e.g. a retro arcade game)" />
-      <div class="output-types" role="radiogroup" aria-label="Artifact type">
-        <button class="otype selected" data-type="auto">Auto</button>
-        <button class="otype" data-type="report">Report</button>
-        <button class="otype" data-type="game">Game</button>
-        <button class="otype" data-type="quiz">Quiz</button>
-        <button class="otype" data-type="slide deck">Slides</button>
-        <button class="otype" data-type="choose-your-own-adventure">Adventure</button>
-        <button class="otype otype-image" data-type="image">Image</button>
+    <input id="directive" type="text" maxlength="500" autocomplete="off"
+           placeholder="What should these become?" />
+
+    <div class="composer-menu-anchor type-menu-anchor">
+      <button id="type-menu-trigger" class="type-menu-trigger" type="button"
+              aria-label="Output type: Auto" aria-haspopup="menu" aria-expanded="false"
+              aria-controls="type-menu">
+        <span id="selected-type-label">Auto</span>
+        <span class="menu-chevron" aria-hidden="true"></span>
+      </button>
+      <div id="type-menu" class="composer-menu type-menu" role="menu" aria-label="Output type" hidden>
+        <button class="otype selected" type="button" role="menuitemradio" aria-checked="true" data-type="auto">Auto<span class="menu-check" aria-hidden="true">✓</span></button>
+        <button class="otype" type="button" role="menuitemradio" aria-checked="false" data-type="report">Report<span class="menu-check" aria-hidden="true">✓</span></button>
+        <button class="otype" type="button" role="menuitemradio" aria-checked="false" data-type="game">Game<span class="menu-check" aria-hidden="true">✓</span></button>
+        <button class="otype" type="button" role="menuitemradio" aria-checked="false" data-type="quiz">Quiz<span class="menu-check" aria-hidden="true">✓</span></button>
+        <button class="otype" type="button" role="menuitemradio" aria-checked="false" data-type="slide deck">Slides<span class="menu-check" aria-hidden="true">✓</span></button>
+        <button class="otype" type="button" role="menuitemradio" aria-checked="false" data-type="choose-your-own-adventure">Adventure<span class="menu-check" aria-hidden="true">✓</span></button>
+        <button class="otype otype-image" type="button" role="menuitemradio" aria-checked="false" data-type="image">Image<span class="menu-check" aria-hidden="true">✓</span></button>
       </div>
     </div>
 
-    <button id="fuse-btn" disabled>Fuse</button>
+    <button id="fuse-btn" type="button" disabled>Fuse</button>
   </footer>
+
+  <section id="discover-panel" aria-labelledby="discover-title" hidden>
+    <header class="discover-bar">
+      <button id="discover-brand" class="discover-brand" type="button" aria-label="Return to canvas">
+        <span class="brand-blobs" aria-hidden="true"><i></i><i></i><i></i></span>
+        Fuse
+      </button>
+      <div class="discover-location">
+        <strong id="discover-title">Discover</strong>
+        <span id="discover-count"></span>
+      </div>
+      <button id="discover-close" class="glass-nav-button" type="button">Canvas</button>
+    </header>
+
+    <main class="discover-main">
+      <div id="discover-loading" class="discover-loading" aria-label="Loading saved outputs">
+        <i></i><i></i><i></i><i></i><i></i><i></i>
+      </div>
+      <div id="discover-grid" class="discover-grid" aria-live="polite"></div>
+      <div id="discover-empty" class="discover-empty" hidden>
+        <strong>No saved outputs yet</strong>
+        <span>Save a fusion to start the gallery.</span>
+      </div>
+      <div id="discover-error" class="discover-empty" role="alert" hidden>
+        <strong>Discover couldn't load</strong>
+        <button id="discover-retry" type="button">Try again</button>
+      </div>
+    </main>
+  </section>
 
   <section id="result-panel" hidden>
     <header class="result-head">
@@ -93,9 +136,10 @@
         <span id="result-meta"></span>
       </div>
       <div class="result-actions">
-        <button id="result-remix" hidden>✦ Remix as ingredient</button>
-        <button id="result-download" hidden>Download</button>
-        <button id="result-close">Close</button>
+        <button id="result-save" type="button" hidden>Save</button>
+        <button id="result-remix" type="button" hidden>Remix</button>
+        <button id="result-download" type="button" hidden>Download</button>
+        <button id="result-close" type="button">Close</button>
       </div>
     </header>
     <pre id="result-code" class="visible"></pre>

@@ -1,6 +1,13 @@
 import express from "express";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import Anthropic, { BadRequestError } from "@anthropic-ai/sdk";
+import {
+  discoverStorageMode,
+  getDiscoverContent,
+  listDiscoverItems,
+  saveDiscoverItem,
+} from "./discover-store.js";
 
 const PORT = process.env.PORT || 3000;
 const MODEL = process.env.FUSE_MODEL || "claude-fable-5";
@@ -17,6 +24,109 @@ const app = express();
 app.use(express.json({ limit: "40mb" }));
 app.use(express.static("public"));
 app.use("/vendor/three", express.static("node_modules/three"));
+app.get("/discover", (_req, res) => {
+  res.sendFile(fileURLToPath(new URL("./public/index.html", import.meta.url)));
+});
+
+/* ---------------- Discover gallery ---------------- */
+
+const DISCOVER_CONTENT_LIMIT = 35 * 1024 * 1024;
+const DISCOVER_HTML_CSP = [
+  "default-src 'none'",
+  "script-src 'unsafe-inline'",
+  "style-src 'unsafe-inline'",
+  "img-src data: blob:",
+  "media-src data: blob:",
+  "font-src data:",
+  "connect-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+].join("; ");
+
+function discoverId(value) {
+  const id = String(value || "");
+  return /^[0-9a-f-]{36}$/i.test(id) ? id : null;
+}
+
+app.get("/api/discover", async (req, res) => {
+  try {
+    const requestedLimit = Number.parseInt(req.query.limit, 10);
+    const limit = Number.isFinite(requestedLimit) ? Math.min(96, Math.max(1, requestedLimit)) : 48;
+    res.json({ items: await listDiscoverItems(limit), storage: discoverStorageMode() });
+  } catch (err) {
+    console.error("discover list error:", err);
+    res.status(500).json({ error: "Couldn't load Discover right now." });
+  }
+});
+
+app.post("/api/discover", async (req, res) => {
+  try {
+    const kind = req.body?.kind;
+    const title = String(req.body?.title || "Untitled fusion").trim().slice(0, 120) || "Untitled fusion";
+    const directive = String(req.body?.directive || "").trim().slice(0, 500);
+    const outputType = String(req.body?.outputType || "auto").trim().slice(0, 80);
+    const rawContent = String(req.body?.content || "");
+
+    let content;
+    let contentType;
+    if (kind === "html") {
+      if (!/<html[\s>]|<!doctype html/i.test(rawContent)) {
+        return res.status(400).json({ error: "The artifact is missing a complete HTML document." });
+      }
+      content = Buffer.from(rawContent, "utf8");
+      contentType = "text/html; charset=utf-8";
+    } else if (kind === "image") {
+      const match = rawContent.match(/^data:(image\/(?:png|jpeg|webp));base64,([a-z0-9+/=\s]+)$/i);
+      if (!match) return res.status(400).json({ error: "The saved image format isn't supported." });
+      content = Buffer.from(match[2], "base64");
+      contentType = match[1].toLowerCase();
+    } else {
+      return res.status(400).json({ error: "Discover accepts HTML artifacts and images." });
+    }
+
+    if (!content.length) return res.status(400).json({ error: "The saved output is empty." });
+    if (content.length > DISCOVER_CONTENT_LIMIT) {
+      return res.status(413).json({ error: "This output is too large to save to Discover." });
+    }
+
+    const id = randomUUID();
+    const item = await saveDiscoverItem(
+      {
+        id,
+        title,
+        kind,
+        directive,
+        outputType,
+        createdAt: new Date().toISOString(),
+        contentType,
+      },
+      content
+    );
+    res.status(201).json({ item, storage: discoverStorageMode() });
+  } catch (err) {
+    console.error("discover save error:", err);
+    res.status(500).json({ error: "Couldn't save this output to Discover." });
+  }
+});
+
+app.get("/api/discover/:id/content", async (req, res) => {
+  const id = discoverId(req.params.id);
+  if (!id) return res.status(404).send("Saved output not found.");
+  try {
+    const stored = await getDiscoverContent(id);
+    if (!stored) return res.status(404).send("Saved output not found.");
+    res.setHeader("Content-Type", stored.contentType);
+    res.setHeader("Cache-Control", "public, max-age=300");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    if (stored.contentType.startsWith("text/html")) {
+      res.setHeader("Content-Security-Policy", DISCOVER_HTML_CSP);
+    }
+    res.send(stored.content);
+  } catch (err) {
+    console.error("discover content error:", err);
+    res.status(500).send("Couldn't load this saved output.");
+  }
+});
 
 const HTML_SYSTEM_BASE = `You are Fuse, a creative engine that blends "ingredients" into a single interactive HTML artifact.
 
@@ -533,6 +643,7 @@ app.post("/api/fuse", async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Fuse is running → http://localhost:${PORT}`);
+  console.log(`Discover storage → ${discoverStorageMode()}`);
   if (!process.env.ANTHROPIC_API_KEY) {
     console.warn(
       "Note: ANTHROPIC_API_KEY is not set. The UI will load, but fusing will fail unless the SDK finds credentials another way (e.g. an `ant auth login` profile)."

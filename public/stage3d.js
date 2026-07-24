@@ -21,6 +21,18 @@ const SUBTRACT = 12;
 const MARGIN = 60; // px of field space around the outermost ball
 const VIS_BOOST = 1.12; // goo reads slightly larger than the logical circle
 const WOBBLE_PX = 5;
+const TRAIL_SPEED_THRESHOLD = 1;
+const TRAIL_SPEED_SCALE = 7;
+const TRAIL_MAX_FRAME_SPEED = 18;
+const TRAIL_MAX_LENGTH_RATIO = 1.35;
+const TRAIL_PRIMARY_REDUCTION = 0.16;
+const TRAIL_SAMPLES = [
+  { offset: 0.2, strength: 0.18 },
+  { offset: 0.4, strength: 0.14 },
+  { offset: 0.6, strength: 0.1 },
+  { offset: 0.8, strength: 0.07 },
+  { offset: 1, strength: 0.05 },
+];
 
 const stage = document.getElementById("stage");
 
@@ -44,7 +56,7 @@ if (renderer) {
   const pmrem = new THREE.PMREMGenerator(renderer);
   scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.05).texture;
 
-  const key = new THREE.DirectionalLight(0xffffff, 1.4);
+  const key = new THREE.DirectionalLight(0xffffff, 1.0);
   key.position.set(-0.4, 1, 0.9);
   scene.add(key);
   scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x2a1650, 0.5));
@@ -69,11 +81,11 @@ if (renderer) {
   for (let i = 0; i < MAXB; i++) ballUniforms[`uTex${i}`] = { value: placeholderTex };
 
   const material = new THREE.MeshPhysicalMaterial({
-    roughness: 0.22,
+    roughness: 0.36,
     metalness: 0.0,
-    clearcoat: 1.0,
-    clearcoatRoughness: 0.14,
-    envMapIntensity: 0.9,
+    clearcoat: 0.5,
+    clearcoatRoughness: 0.28,
+    envMapIntensity: 0.65,
   });
 
   material.onBeforeCompile = (shader) => {
@@ -181,6 +193,8 @@ vec2 fuseBallUv(vec3 p, vec3 c, float r) {
           tex: null,
           texUrl: null,
           phase: Math.random() * Math.PI * 2,
+          trailVx: 0,
+          trailVy: 0,
         };
         balls.set(b.id, s);
       } else {
@@ -230,10 +244,32 @@ vec2 fuseBallUv(vec3 p, vec3 c, float r) {
       const tx = collapseTo ? collapseTo.x : b.x;
       const ty = collapseTo ? collapseTo.y : b.y;
       const tr = collapseTo ? b.r * 0.82 : b.r;
-      const k = collapseTo ? 0.045 : 0.16;
+      const k = collapseTo ? 0.045 : b.dragging ? 1 : 0.16;
+      const previousX = s.x;
+      const previousY = s.y;
       s.x += (tx - s.x) * k;
       s.y += (ty - s.y) * k;
       s.r += (tr - s.r) * 0.12;
+
+      const trailEase = b.dragging ? 0.3 : 0.14;
+      const rawTrailVx = b.dragging ? s.x - previousX : 0;
+      const rawTrailVy = b.dragging ? s.y - previousY : 0;
+      const rawTrailSpeed = Math.hypot(rawTrailVx, rawTrailVy);
+      const trailVelocityScale = rawTrailSpeed > TRAIL_MAX_FRAME_SPEED
+        ? TRAIL_MAX_FRAME_SPEED / rawTrailSpeed
+        : 1;
+      const targetTrailVx = rawTrailVx * trailVelocityScale;
+      const targetTrailVy = rawTrailVy * trailVelocityScale;
+      s.trailVx += (targetTrailVx - s.trailVx) * trailEase;
+      s.trailVy += (targetTrailVy - s.trailVy) * trailEase;
+      const trailSpeed = Math.hypot(s.trailVx, s.trailVy);
+      const maxTrailLength = s.r * TRAIL_MAX_LENGTH_RATIO;
+      const trailLength = trailSpeed > TRAIL_SPEED_THRESHOLD
+        ? Math.min(maxTrailLength, (trailSpeed - TRAIL_SPEED_THRESHOLD) * TRAIL_SPEED_SCALE)
+        : 0;
+      const trailAmount = maxTrailLength > 0 ? trailLength / maxTrailLength : 0;
+      const trailX = trailSpeed > 0 ? (s.trailVx / trailSpeed) * trailLength : 0;
+      const trailY = trailSpeed > 0 ? (s.trailVy / trailSpeed) * trailLength : 0;
 
       const squish = collapseTo ? 0.35 : 1;
       const wx = s.x + Math.sin(t * 0.7 + s.phase) * WOBBLE_PX * squish;
@@ -241,7 +277,7 @@ vec2 fuseBallUv(vec3 p, vec3 c, float r) {
       const wr = (s.r * VIS_BOOST + 8) * (1 + 0.05 * Math.sin(t * 1.4 + s.phase));
       const wz = 0.12 * Math.sin(t * 0.55 + s.phase * 2.3); // gentle depth bob, ±px added later
 
-      view.push({ x: wx, y: wy, r: wr, z: wz, colorLin: s.colorLin, tex: s.tex });
+      view.push({ x: wx, y: wy, r: wr, z: wz, trailX, trailY, trailAmount, colorLin: s.colorLin, tex: s.tex });
       minX = Math.min(minX, wx - wr);
       maxX = Math.max(maxX, wx + wr);
       minY = Math.min(minY, wy - wr);
@@ -264,7 +300,22 @@ vec2 fuseBallUv(vec3 p, vec3 c, float r) {
       const by = (height - v.y - (height - cy - half)) / (2 * half);
       const bz = 0.5 + v.z;
       const rNorm = v.r / (2 * half);
-      mc.addBall(bx, by, bz, STRENGTH_SCALE * rNorm * rNorm, SUBTRACT);
+      const primaryStrength = 1 - v.trailAmount * TRAIL_PRIMARY_REDUCTION;
+      mc.addBall(bx, by, bz, STRENGTH_SCALE * rNorm * rNorm * primaryStrength, SUBTRACT);
+      for (const sample of TRAIL_SAMPLES) {
+        if (v.trailX === 0 && v.trailY === 0) break;
+        const sampleX = v.x - v.trailX * sample.offset;
+        const sampleY = v.y - v.trailY * sample.offset;
+        const sampleBx = (sampleX - (cx - half)) / (2 * half);
+        const sampleBy = (height - sampleY - (height - cy - half)) / (2 * half);
+        mc.addBall(
+          sampleBx,
+          sampleBy,
+          bz,
+          STRENGTH_SCALE * rNorm * rNorm * sample.strength * v.trailAmount,
+          SUBTRACT
+        );
+      }
 
       // Mirror into the surface shader (world coords, y up)
       ballUniforms.uPos.value[i].set(v.x, height - v.y, 2 * half * v.z);
