@@ -37,6 +37,7 @@ const resultFrame = document.getElementById("result-frame");
 const resultDownload = document.getElementById("result-download");
 const resultRemix = document.getElementById("result-remix");
 const resultSave = document.getElementById("result-save");
+const resultShare = document.getElementById("result-share");
 const resultImageWrap = document.getElementById("result-image-wrap");
 const resultImage = document.getElementById("result-image");
 const discoverPanel = document.getElementById("discover-panel");
@@ -52,8 +53,10 @@ let resultKind = null; // 'html' | 'image'
 let panelMode = "html"; // what this fuse run is producing: 'html' | 'image'
 let liveAttached = false; // iframe is following the server's live HTML stream
 let activeDiscoverEntry = null;
+let shareableDiscoverEntry = null;
 let discoverItems = [];
-let discoverPreviewObserver = null;
+const pendingDiscoverPreviews = new Map();
+let discoverPreviewCheckQueued = false;
 
 /* ---------------- Rendering ---------------- */
 
@@ -655,7 +658,19 @@ function discoverKindLabel(item) {
   return item.outputType && item.outputType !== "auto" ? item.outputType : "Artifact";
 }
 
-function sandboxStoredHtml(source) {
+function generatedDiscoverTitle(source, fallback = "Untitled artifact") {
+  const documentNode = new DOMParser().parseFromString(source, "text/html");
+  const candidates = [
+    documentNode.querySelector("h1")?.textContent,
+    documentNode.querySelector("title")?.textContent,
+  ];
+  return candidates
+    .map((value) => String(value || "").replace(/\s+/g, " ").trim())
+    .find((value) => value.length >= 3)
+    ?.slice(0, 120) || fallback;
+}
+
+function sandboxStoredHtml(source, { hideScrollbars = false } = {}) {
   const policy = [
     "default-src 'none'",
     "script-src 'unsafe-inline'",
@@ -668,38 +683,52 @@ function sandboxStoredHtml(source) {
     "form-action 'none'",
   ].join("; ");
   const meta = `<meta http-equiv="Content-Security-Policy" content="${policy}">`;
-  if (/<head[\s>]/i.test(source)) return source.replace(/<head([^>]*)>/i, `<head$1>${meta}`);
-  if (/<html[\s>]/i.test(source)) return source.replace(/<html([^>]*)>/i, `<html$1><head>${meta}</head>`);
-  return `<!doctype html><html><head>${meta}</head><body>${source}</body></html>`;
+  const previewStyle = hideScrollbars
+    ? `<style data-fuse-preview>html,body{scrollbar-width:none}*::-webkit-scrollbar{display:none;width:0;height:0}</style>`
+    : "";
+  const headContent = meta + previewStyle;
+  if (/<head[\s>]/i.test(source)) return source.replace(/<head([^>]*)>/i, `<head$1>${headContent}`);
+  if (/<html[\s>]/i.test(source)) return source.replace(/<html([^>]*)>/i, `<html$1><head>${headContent}</head>`);
+  return `<!doctype html><html><head>${headContent}</head><body>${source}</body></html>`;
 }
 
-function observeDiscoverPreview(frame, item) {
-  if (!discoverPreviewObserver) {
-    discoverPreviewObserver = new IntersectionObserver(
-      (entries, observer) => {
-        for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-          observer.unobserve(entry.target);
-          const previewFrame = entry.target;
-          fetch(previewFrame.dataset.contentUrl)
-            .then((response) => {
-              if (!response.ok) throw new Error("preview unavailable");
-              return response.text();
-            })
-            .then((html) => { previewFrame.srcdoc = sandboxStoredHtml(html); })
-            .catch(() => { previewFrame.dataset.failed = "true"; });
-        }
-      },
-      { root: discoverPanel, rootMargin: "400px 0px" }
-    );
+async function loadDiscoverPreview(frame, entry) {
+  pendingDiscoverPreviews.delete(frame);
+  try {
+    const response = await fetch(entry.item.contentUrl);
+    if (!response.ok) throw new Error("preview unavailable");
+    const html = await response.text();
+    const displayTitle = generatedDiscoverTitle(html, entry.item.title);
+    entry.item.title = displayTitle;
+    entry.onTitle(displayTitle);
+    frame.srcdoc = sandboxStoredHtml(html, { hideScrollbars: true });
+  } catch {
+    frame.dataset.failed = "true";
   }
+}
+
+function checkDiscoverPreviews() {
+  discoverPreviewCheckQueued = false;
+  for (const [frame, entry] of pendingDiscoverPreviews) {
+    const rect = frame.getBoundingClientRect();
+    if (rect.bottom >= -400 && rect.top <= innerHeight + 400) loadDiscoverPreview(frame, entry);
+  }
+}
+
+function scheduleDiscoverPreviewCheck() {
+  if (discoverPreviewCheckQueued) return;
+  discoverPreviewCheckQueued = true;
+  setTimeout(checkDiscoverPreviews, 0);
+}
+
+function observeDiscoverPreview(frame, item, onTitle) {
   frame.dataset.contentUrl = item.contentUrl;
-  discoverPreviewObserver.observe(frame);
+  pendingDiscoverPreviews.set(frame, { item, onTitle });
+  scheduleDiscoverPreviewCheck();
 }
 
 function renderDiscoverItems() {
-  discoverPreviewObserver?.disconnect();
-  discoverPreviewObserver = null;
+  pendingDiscoverPreviews.clear();
   discoverGrid.replaceChildren();
   discoverEmpty.hidden = discoverItems.length > 0;
 
@@ -710,6 +739,7 @@ function renderDiscoverItems() {
 
     const preview = document.createElement("div");
     preview.className = "discover-preview";
+    let previewFrame = null;
     if (item.kind === "image") {
       const image = document.createElement("img");
       image.src = item.contentUrl;
@@ -717,12 +747,11 @@ function renderDiscoverItems() {
       image.loading = "lazy";
       preview.appendChild(image);
     } else {
-      const frame = document.createElement("iframe");
-      frame.title = `Preview of ${item.title}`;
-      frame.tabIndex = -1;
-      frame.setAttribute("sandbox", "allow-scripts");
-      preview.appendChild(frame);
-      observeDiscoverPreview(frame, item);
+      previewFrame = document.createElement("iframe");
+      previewFrame.title = `Preview of ${item.title}`;
+      previewFrame.tabIndex = -1;
+      previewFrame.setAttribute("sandbox", "allow-scripts");
+      preview.appendChild(previewFrame);
     }
 
     const openButton = document.createElement("button");
@@ -736,16 +765,20 @@ function renderDiscoverItems() {
     metadata.className = "discover-card-meta";
     const title = document.createElement("h2");
     title.textContent = item.title;
-    const kind = document.createElement("span");
-    kind.className = "discover-kind";
-    kind.textContent = discoverKindLabel(item);
     const date = document.createElement("span");
     date.className = "discover-date";
     date.textContent = formatDiscoverDate(item.createdAt);
-    metadata.append(title, kind, date);
+    metadata.append(title, date);
 
     card.append(preview, metadata);
     discoverGrid.appendChild(card);
+    if (item.kind === "html") {
+      observeDiscoverPreview(previewFrame, item, (displayTitle) => {
+        title.textContent = displayTitle;
+        previewFrame.title = `Preview of ${displayTitle}`;
+        openButton.setAttribute("aria-label", `Open ${displayTitle}`);
+      });
+    }
   }
 }
 
@@ -761,6 +794,7 @@ async function loadDiscover() {
     discoverItems = Array.isArray(payload.items) ? payload.items : [];
     renderDiscoverItems();
     discoverGrid.hidden = false;
+    scheduleDiscoverPreviewCheck();
   } catch (err) {
     console.error(err);
     discoverError.hidden = false;
@@ -773,6 +807,7 @@ function openDiscover({ pushHistory = true } = {}) {
   clearTimeout(panelRevealTimer);
   resultPanel.hidden = true;
   activeDiscoverEntry = null;
+  shareableDiscoverEntry = null;
   closeComposerMenus();
   document.querySelector(".topbar").inert = true;
   stage.inert = true;
@@ -798,6 +833,23 @@ function closeDiscover({ pushHistory = true } = {}) {
   }
 }
 
+function discoverEntryIdFromPath() {
+  return location.pathname.match(/^\/discover\/([0-9a-f-]{36})\/?$/i)?.[1] || null;
+}
+
+function discoverEntryPath(item) {
+  return `/discover/${encodeURIComponent(item.id)}`;
+}
+
+async function getDiscoverEntry(id) {
+  const existing = discoverItems.find((item) => item.id === id);
+  if (existing) return existing;
+  const response = await fetch(`/api/discover/${encodeURIComponent(id)}`, { cache: "no-store" });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || "Saved output not found.");
+  return payload.item;
+}
+
 function syncViewToggle(view) {
   document.querySelectorAll("[data-view-target]").forEach((button) => {
     const selected = button.dataset.viewTarget === view;
@@ -813,10 +865,32 @@ document.querySelectorAll("[data-view-target]").forEach((button) => {
   });
 });
 document.getElementById("discover-retry").addEventListener("click", loadDiscover);
-window.addEventListener("popstate", () => {
-  if (location.pathname === "/discover") openDiscover({ pushHistory: false });
-  else closeDiscover({ pushHistory: false });
-});
+discoverPanel.addEventListener("scroll", scheduleDiscoverPreviewCheck, { passive: true });
+async function syncViewFromLocation() {
+  const entryId = discoverEntryIdFromPath();
+  if (entryId) {
+    openDiscover({ pushHistory: false });
+    try {
+      await openDiscoverEntry(await getDiscoverEntry(entryId), { pushHistory: false });
+    } catch (err) {
+      resultPanel.hidden = true;
+      discoverError.hidden = false;
+      discoverError.querySelector("strong").textContent = err.message;
+    }
+  } else if (location.pathname === "/discover") {
+    resultPanel.hidden = true;
+    activeDiscoverEntry = null;
+    shareableDiscoverEntry = null;
+    openDiscover({ pushHistory: false });
+  } else {
+    resultPanel.hidden = true;
+    activeDiscoverEntry = null;
+    shareableDiscoverEntry = null;
+    closeDiscover({ pushHistory: false });
+  }
+}
+
+window.addEventListener("popstate", syncViewFromLocation);
 
 /* ---------------- Fuse ---------------- */
 
@@ -960,6 +1034,7 @@ function showResultPanel() {
 
 function openResultPanel(mode) {
   activeDiscoverEntry = null;
+  shareableDiscoverEntry = null;
   panelMode = mode;
   clearTimeout(panelRevealTimer);
   if (window.Stage3D?.active) {
@@ -977,8 +1052,9 @@ function openResultPanel(mode) {
   resultDownload.hidden = true;
   resultRemix.hidden = true;
   resultSave.hidden = true;
+  resultShare.hidden = true;
   resultSave.disabled = false;
-  resultSave.textContent = "Save";
+  setResultAction(resultSave, "Save to Discover", "＋");
   lastArtifactHtml = "";
   lastImageDataUrl = "";
   resultKind = null;
@@ -1035,12 +1111,19 @@ function finishResult(raw, meta) {
   if (meta.usage?.output) bits.push(`${meta.usage.output.toLocaleString()} tokens out`);
   if (meta.stopReason === "max_tokens") bits.push("⚠ truncated at token limit");
   resultMeta.textContent = bits.join(" · ");
-  resultDownload.textContent = resultKind === "image" ? "Download .png" : "Download .html";
+  setResultAction(resultDownload, resultKind === "image" ? "Download PNG" : "Download HTML", "↓");
   resultDownload.hidden = false;
   resultRemix.hidden = false;
   resultSave.hidden = false;
+  resultShare.hidden = true;
   resultSave.disabled = false;
-  resultSave.textContent = "Save";
+  setResultAction(resultSave, "Save to Discover", "＋");
+}
+
+function setResultAction(button, label, icon) {
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  button.querySelector(".result-action-icon").textContent = icon;
 }
 
 function blobToDataUrl(blob) {
@@ -1085,9 +1168,13 @@ function downloadBlob(blob, name) {
   setTimeout(() => URL.revokeObjectURL(link.href), 0);
 }
 
-async function openDiscoverEntry(item) {
+async function openDiscoverEntry(item, { pushHistory = true } = {}) {
   clearTimeout(panelRevealTimer);
   activeDiscoverEntry = item;
+  shareableDiscoverEntry = item;
+  if (pushHistory && location.pathname !== discoverEntryPath(item)) {
+    history.pushState({ view: "artifact", id: item.id }, "", discoverEntryPath(item));
+  }
   resultPanel.hidden = false;
   document.title = `${item.title} — Fuse`;
   resultKind = item.kind;
@@ -1095,7 +1182,7 @@ async function openDiscoverEntry(item) {
   lastImageDataUrl = "";
   liveAttached = false;
   resultStatus.textContent = item.title;
-  resultMeta.textContent = `${discoverKindLabel(item)} · ${formatDiscoverDate(item.createdAt)}`;
+  resultMeta.textContent = "";
   resultCode.classList.remove("visible");
   resultFrame.classList.remove("visible");
   resultImageWrap.classList.remove("visible");
@@ -1103,9 +1190,11 @@ async function openDiscoverEntry(item) {
   resultFrame.removeAttribute("srcdoc");
   resultFrame.src = "about:blank";
   resultSave.hidden = true;
+  resultShare.hidden = false;
+  setResultAction(resultShare, "Copy link", "⧉");
   resultRemix.hidden = false;
   resultDownload.hidden = false;
-  resultDownload.textContent = item.kind === "image" ? "Download .png" : "Download .html";
+  setResultAction(resultDownload, item.kind === "image" ? "Download PNG" : "Download HTML", "↓");
   if (item.kind === "image") {
     resultImage.src = item.contentUrl;
     resultImageWrap.classList.add("visible");
@@ -1114,7 +1203,7 @@ async function openDiscoverEntry(item) {
     try {
       const response = await fetch(item.contentUrl);
       if (!response.ok) throw new Error("Saved output unavailable.");
-      resultFrame.srcdoc = sandboxStoredHtml(await response.text());
+      resultFrame.srcdoc = sandboxStoredHtml(await response.text(), { hideScrollbars: true });
     } catch (err) {
       resultFrame.classList.remove("visible");
       resultCode.textContent = err.message;
@@ -1126,17 +1215,20 @@ async function openDiscoverEntry(item) {
 resultSave.addEventListener("click", async () => {
   if (resultSave.disabled || !resultKind) return;
   resultSave.disabled = true;
-  resultSave.textContent = "Saving…";
+  setResultAction(resultSave, "Saving to Discover", "…");
   try {
     const directive = directiveInput.value.trim();
     const content = resultKind === "image"
       ? lastImageDataUrl
       : await materializeArtifactHtml(lastArtifactHtml);
+    const title = resultKind === "html"
+      ? generatedDiscoverTitle(content, directive || "Untitled artifact")
+      : directive || "Untitled image";
     const response = await fetch("/api/discover", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        title: directive || (resultKind === "image" ? "Untitled image" : "Untitled artifact"),
+        title,
         kind: resultKind,
         directive,
         outputType,
@@ -1146,12 +1238,38 @@ resultSave.addEventListener("click", async () => {
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || "Couldn't save this output.");
     discoverItems = [payload.item, ...discoverItems.filter((item) => item.id !== payload.item.id)];
-    resultSave.textContent = "Saved";
+    shareableDiscoverEntry = payload.item;
+    resultShare.hidden = false;
+    setResultAction(resultShare, "Copy link", "⧉");
+    setResultAction(resultSave, "Saved to Discover", "✓");
   } catch (err) {
     resultSave.disabled = false;
-    resultSave.textContent = "Save";
+    setResultAction(resultSave, "Save to Discover", "＋");
     resultMeta.textContent = err.message;
   }
+});
+
+async function copyTextToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const input = document.createElement("textarea");
+    input.value = text;
+    input.style.position = "fixed";
+    input.style.opacity = "0";
+    document.body.appendChild(input);
+    input.select();
+    document.execCommand("copy");
+    input.remove();
+  }
+}
+
+resultShare.addEventListener("click", async () => {
+  if (!shareableDiscoverEntry) return;
+  const shareUrl = new URL(discoverEntryPath(shareableDiscoverEntry), location.origin).href;
+  await copyTextToClipboard(shareUrl);
+  setResultAction(resultShare, "Link copied", "✓");
+  setTimeout(() => { setResultAction(resultShare, "Copy link", "⧉"); }, 1600);
 });
 
 resultDownload.addEventListener("click", async () => {
@@ -1210,6 +1328,10 @@ document.getElementById("result-close").addEventListener("click", () => {
   const returningToDiscover = Boolean(activeDiscoverEntry);
   resultPanel.hidden = true;
   activeDiscoverEntry = null;
+  shareableDiscoverEntry = null;
+  if (returningToDiscover && discoverEntryIdFromPath()) {
+    history.pushState({ view: "discover" }, "", "/discover");
+  }
   document.title = returningToDiscover ? "Discover — Fuse" : "Fuse — metaball mixer";
 });
 
@@ -1218,4 +1340,4 @@ document.getElementById("result-close").addEventListener("click", () => {
 window.addEventListener("resize", render);
 window.addEventListener("stage3d-ready", render);
 render();
-if (location.pathname === "/discover") openDiscover({ pushHistory: false });
+syncViewFromLocation();

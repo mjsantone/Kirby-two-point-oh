@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Fuse — metaball mixer</title>
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="/style.css" />
   <script type="importmap">
     {
       "imports": {
@@ -136,10 +136,11 @@
         <span id="result-meta"></span>
       </div>
       <div class="result-actions">
-        <button id="result-save" type="button" hidden>Save</button>
-        <button id="result-remix" type="button" hidden>Remix</button>
-        <button id="result-download" type="button" hidden>Download</button>
-        <button id="result-close" type="button">Close</button>
+        <button id="result-save" type="button" aria-label="Save to Discover" title="Save to Discover" hidden><span class="result-action-icon" aria-hidden="true">＋</span></button>
+        <button id="result-share" type="button" aria-label="Copy link" title="Copy link" hidden><span class="result-action-icon" aria-hidden="true">⧉</span></button>
+        <button id="result-remix" type="button" aria-label="Remix as ingredient" title="Remix as ingredient" hidden><span class="result-action-icon" aria-hidden="true">✦</span></button>
+        <button id="result-download" type="button" aria-label="Download" title="Download" hidden><span class="result-action-icon" aria-hidden="true">↓</span></button>
+        <button id="result-close" type="button" aria-label="Close" title="Close"><span class="result-action-icon" aria-hidden="true">×</span></button>
       </div>
     </header>
     <pre id="result-code" class="visible"></pre>
@@ -147,7 +148,7 @@
     <div id="result-image-wrap"><img id="result-image" alt="Fused image" /></div>
   </section>
 
-  <script src="app.js"></script>
-  <script type="module" src="stage3d.js"></script>
+  <script src="/app.js"></script>
+  <script type="module" src="/stage3d.js"></script>
 </body>
 </html>

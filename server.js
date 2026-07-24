@@ -1,6 +1,8 @@
 import express from "express";
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { Resvg } from "@resvg/resvg-js";
 import Anthropic, { BadRequestError } from "@anthropic-ai/sdk";
 import {
   discoverStorageMode,
@@ -17,6 +19,8 @@ const IMAGE_MODEL = process.env.IMAGE_MODEL || "gpt-image-2";
 const OPENAI_BASE = process.env.OPENAI_BASE_URL || "https://api.openai.com";
 const MAX_ITEMS = 5;
 const ARTIFACT_CHAR_CAP = 40000;
+const INDEX_PATH = fileURLToPath(new URL("./public/index.html", import.meta.url));
+const indexTemplatePromise = readFile(INDEX_PATH, "utf8");
 
 const client = new Anthropic();
 const app = express();
@@ -25,12 +29,63 @@ app.use(express.json({ limit: "40mb" }));
 app.use(express.static("public"));
 app.use("/vendor/three", express.static("node_modules/three"));
 app.get("/discover", (_req, res) => {
-  res.sendFile(fileURLToPath(new URL("./public/index.html", import.meta.url)));
+  res.sendFile(INDEX_PATH);
+});
+app.get("/discover/:id", async (req, res) => {
+  const id = discoverId(req.params.id);
+  if (!id) return res.status(404).send("Saved output not found.");
+  try {
+    const stored = await getDiscoverContent(id);
+    if (!stored?.item) return res.status(404).send("Saved output not found.");
+    const item = { ...stored.item };
+    let generatedDescription = "";
+    if (stored.contentType.startsWith("text/html")) {
+      const html = stored.content.toString("utf8");
+      item.title = generatedHtmlTitle(html) || item.title;
+      generatedDescription = generatedHtmlDescription(html);
+    }
+    const forwardedProtocol = String(req.get("x-forwarded-proto") || req.protocol).split(",")[0];
+    const origin = `${forwardedProtocol}://${req.get("host")}`;
+    const pageUrl = `${origin}/discover/${id}`;
+    const imageUrl = `${origin}/api/discover/${id}/share-card.png`;
+    const description = generatedDescription || (item.directive
+      ? item.directive.slice(0, 180)
+      : `A saved ${item.kind === "image" ? "image" : "interactive artifact"} created with Fuse.`);
+    const social = [
+      `<meta name="description" content="${escapeMarkup(description)}">`,
+      `<meta property="og:type" content="website">`,
+      `<meta property="og:site_name" content="Fuse">`,
+      `<meta property="og:title" content="${escapeMarkup(item.title)}">`,
+      `<meta property="og:description" content="${escapeMarkup(description)}">`,
+      `<meta property="og:url" content="${escapeMarkup(pageUrl)}">`,
+      `<meta property="og:image" content="${escapeMarkup(imageUrl)}">`,
+      `<meta property="og:image:secure_url" content="${escapeMarkup(imageUrl)}">`,
+      `<meta property="og:image:type" content="image/png">`,
+      `<meta property="og:image:width" content="1200">`,
+      `<meta property="og:image:height" content="630">`,
+      `<meta property="og:image:alt" content="Preview card for ${escapeMarkup(item.title)}">`,
+      `<meta name="twitter:card" content="summary_large_image">`,
+      `<meta name="twitter:title" content="${escapeMarkup(item.title)}">`,
+      `<meta name="twitter:description" content="${escapeMarkup(description)}">`,
+      `<meta name="twitter:image" content="${escapeMarkup(imageUrl)}">`,
+      `<link rel="canonical" href="${escapeMarkup(pageUrl)}">`,
+    ].join("\n  ");
+    const template = await indexTemplatePromise;
+    const page = template
+      .replace(/<title>[\s\S]*?<\/title>/i, `<title>${escapeMarkup(item.title)} — Fuse</title>`)
+      .replace("</head>", `  ${social}\n</head>`);
+    res.setHeader("Cache-Control", "public, max-age=300");
+    res.type("html").send(page);
+  } catch (err) {
+    console.error("discover share page error:", err);
+    res.status(500).send("Couldn't load this saved output.");
+  }
 });
 
 /* ---------------- Discover gallery ---------------- */
 
 const DISCOVER_CONTENT_LIMIT = 35 * 1024 * 1024;
+const shareCardCache = new Map();
 const DISCOVER_HTML_CSP = [
   "default-src 'none'",
   "script-src 'unsafe-inline'",
@@ -48,6 +103,114 @@ function discoverId(value) {
   return /^[0-9a-f-]{36}$/i.test(id) ? id : null;
 }
 
+function escapeMarkup(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function shareTitleLines(title, maxChars = 25, maxLines = 3) {
+  const words = String(title || "Untitled fusion").split(/\s+/).filter(Boolean);
+  const lines = [];
+  let line = "";
+  for (const word of words) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (candidate.length <= maxChars || !line) line = candidate;
+    else {
+      lines.push(line);
+      line = word;
+      if (lines.length === maxLines - 1) break;
+    }
+  }
+  if (line && lines.length < maxLines) lines.push(line);
+  const consumed = lines.join(" ").split(/\s+/).length;
+  if (consumed < words.length) lines[lines.length - 1] = `${lines.at(-1).replace(/[.,;:!?-]*$/, "")}…`;
+  return lines;
+}
+
+function shareAccent(id) {
+  const palette = ["#ff7ac3", "#7ae0ff", "#ffd166", "#8bffb0", "#c9a2ff"];
+  const hash = [...id].reduce((sum, char) => sum + char.charCodeAt(0), 0);
+  return palette[hash % palette.length];
+}
+
+function renderShareCard(item) {
+  const lines = shareTitleLines(item.title);
+  const accent = shareAccent(item.id);
+  const title = lines
+    .map((line, index) => `<tspan x="80" dy="${index === 0 ? 0 : 82}">${escapeMarkup(line)}</tspan>`)
+    .join("");
+  const kind = item.kind === "image" ? "IMAGE" : "INTERACTIVE ARTIFACT";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+    <defs>
+      <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse"><path d="M48 0H0V48" fill="none" stroke="#292b2d" stroke-width="1"/></pattern>
+      <linearGradient id="surface" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#202223"/><stop offset="1" stop-color="#111213"/></linearGradient>
+    </defs>
+    <rect width="1200" height="630" fill="url(#surface)"/>
+    <rect width="1200" height="630" fill="url(#grid)"/>
+    <rect x="40" y="40" width="1120" height="550" rx="44" fill="#171819" fill-opacity=".92" stroke="#3d3f41"/>
+    <circle cx="84" cy="86" r="14" fill="#ff7ac3"/><circle cx="101" cy="86" r="14" fill="#7ae0ff"/><circle cx="118" cy="86" r="14" fill="#ffd166"/>
+    <text x="148" y="98" fill="#f5f5f5" font-family="Arial, sans-serif" font-size="34" font-weight="700">Fuse</text>
+    <rect x="80" y="158" width="64" height="8" rx="4" fill="${accent}"/>
+    <text x="80" y="270" fill="#f5f5f5" font-family="Georgia, serif" font-size="72" font-weight="400">${title}</text>
+    <text x="80" y="548" fill="#a9abad" font-family="Arial, sans-serif" font-size="20" font-weight="700" letter-spacing="4">${kind}</text>
+    <text x="1120" y="548" text-anchor="end" fill="${accent}" font-family="Arial, sans-serif" font-size="22" font-weight="700">Open in Fuse →</text>
+  </svg>`;
+  return new Resvg(svg, {
+    fitTo: { mode: "width", value: 1200 },
+    font: { loadSystemFonts: true, defaultFontFamily: "Arial" },
+  }).render().asPng();
+}
+
+function decodeHtmlText(value) {
+  const named = {
+    amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
+    ndash: "–", mdash: "—", hellip: "…", lsquo: "‘", rsquo: "’", ldquo: "“", rdquo: "”",
+  };
+  return String(value || "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp|ndash|mdash|hellip|lsquo|rsquo|ldquo|rdquo);/gi, (_match, entity) => {
+      if (entity[0] !== "#") return named[entity.toLowerCase()] || "";
+      const hex = entity[1].toLowerCase() === "x";
+      const codePoint = Number.parseInt(entity.slice(hex ? 2 : 1), hex ? 16 : 10);
+      return Number.isInteger(codePoint) && codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : "";
+    })
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function generatedHtmlTitle(html) {
+  const candidates = [
+    html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1],
+    html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1],
+  ];
+  return candidates.map(decodeHtmlText).find((value) => value.length >= 3)?.slice(0, 120) || "";
+}
+
+function generatedHtmlDescription(html) {
+  const metaTag = html.match(/<meta\s+[^>]*name=["']description["'][^>]*>/i)?.[0];
+  const metaDescription = metaTag?.match(/content=["']([^"']+)["']/i)?.[1];
+  const candidates = [
+    metaDescription,
+    ...[...html.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)].slice(0, 4).map((match) => match[1]),
+  ];
+  const description = candidates
+    .map(decodeHtmlText)
+    .find((value) => value.length >= 40);
+  return description ? clipText(description, 180) : "";
+}
+
+function clipText(value, maxLength) {
+  const text = String(value || "").trim();
+  if (text.length <= maxLength) return text;
+  const clipped = text.slice(0, maxLength - 1);
+  const boundary = Math.max(clipped.lastIndexOf(" "), clipped.lastIndexOf("—"));
+  return `${clipped.slice(0, boundary > maxLength * 0.7 ? boundary : clipped.length).trim()}…`;
+}
+
 app.get("/api/discover", async (req, res) => {
   try {
     const requestedLimit = Number.parseInt(req.query.limit, 10);
@@ -62,7 +225,7 @@ app.get("/api/discover", async (req, res) => {
 app.post("/api/discover", async (req, res) => {
   try {
     const kind = req.body?.kind;
-    const title = String(req.body?.title || "Untitled fusion").trim().slice(0, 120) || "Untitled fusion";
+    const requestedTitle = String(req.body?.title || "Untitled fusion").trim().slice(0, 120) || "Untitled fusion";
     const directive = String(req.body?.directive || "").trim().slice(0, 500);
     const outputType = String(req.body?.outputType || "auto").trim().slice(0, 80);
     const rawContent = String(req.body?.content || "");
@@ -90,6 +253,7 @@ app.post("/api/discover", async (req, res) => {
     }
 
     const id = randomUUID();
+    const title = kind === "html" ? generatedHtmlTitle(rawContent) || requestedTitle : requestedTitle;
     const item = await saveDiscoverItem(
       {
         id,
@@ -106,6 +270,48 @@ app.post("/api/discover", async (req, res) => {
   } catch (err) {
     console.error("discover save error:", err);
     res.status(500).json({ error: "Couldn't save this output to Discover." });
+  }
+});
+
+app.get("/api/discover/:id", async (req, res) => {
+  const id = discoverId(req.params.id);
+  if (!id) return res.status(404).json({ error: "Saved output not found." });
+  try {
+    const stored = await getDiscoverContent(id);
+    if (!stored?.item) return res.status(404).json({ error: "Saved output not found." });
+    const item = { ...stored.item };
+    if (stored.contentType.startsWith("text/html")) {
+      item.title = generatedHtmlTitle(stored.content.toString("utf8")) || item.title;
+    }
+    res.json({ item });
+  } catch (err) {
+    console.error("discover item error:", err);
+    res.status(500).json({ error: "Couldn't load this saved output." });
+  }
+});
+
+app.get("/api/discover/:id/share-card.png", async (req, res) => {
+  const id = discoverId(req.params.id);
+  if (!id) return res.status(404).send("Saved output not found.");
+  try {
+    let png = shareCardCache.get(id);
+    if (!png) {
+      const stored = await getDiscoverContent(id);
+      if (!stored?.item) return res.status(404).send("Saved output not found.");
+      const item = { ...stored.item };
+      if (stored.contentType.startsWith("text/html")) {
+        item.title = generatedHtmlTitle(stored.content.toString("utf8")) || item.title;
+      }
+      png = renderShareCard(item);
+      shareCardCache.set(id, png);
+      if (shareCardCache.size > 100) shareCardCache.delete(shareCardCache.keys().next().value);
+    }
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    res.send(png);
+  } catch (err) {
+    console.error("discover share card error:", err);
+    res.status(500).send("Couldn't render this share card.");
   }
 });
 
@@ -150,6 +356,7 @@ Visual direction — editorial Microsoft, interpreted at a high level:
 
 Output contract (strict):
 - Respond with exactly one complete, self-contained HTML document and nothing else. Start with <!doctype html>. No markdown fences, no commentary before or after.
+- Give the document a concise, distinctive <title> that reads like a memorable headline (roughly 3–9 words). Do not use a generic format label such as "Report" or "Infographic," and do not simply copy the directive.
 - Inline all CSS and JavaScript. Zero external requests: no CDNs, no external fonts, no remote images. If you need graphics, draw them with inline SVG, CSS, or canvas.
 - The page must work when loaded in a sandboxed iframe (scripts allowed, no network).
 - Make it delightful: polished layout, a cohesive palette drawn from the ingredients, satisfying micro-interactions. For games/quizzes/adventures, the interactivity must genuinely work (state, scoring, branching). For slide decks, include keyboard and button navigation. For reports, invent plausible, clearly-illustrative content grounded in the ingredients.
