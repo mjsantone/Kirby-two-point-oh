@@ -139,6 +139,15 @@ How to blend:
 - For fused-artifact ingredients (HTML from a previous fusion), blend their themes, content, characters, and mechanics — remix them, don't just copy the markup.
 - Respect the PROXIMITY notes if present: touching ingredients should merge into one tightly-integrated concept; a distant ingredient is a garnish that seasons the whole rather than a core element.
 
+Visual direction — editorial Microsoft, interpreted at a high level:
+- Combine magazine-grade editorial hierarchy with structured document rigor. Let typography, reading rhythm, and information architecture carry the design before decoration does.
+- Pair an expressive serif voice for major editorial headlines, meaningful numerical values, and rare italic emphasis with a clean sans-serif voice for body copy, labels, controls, tables, and functional UI. Body copy is always sans-serif. Functional artifacts may remain sans-led throughout.
+- Build on a disciplined grid and readable text measure. Keep sustained reading comfortably narrow; let only genuine hero moments break the grid, deliberately and sparingly.
+- Use a restrained neutral foundation with paired-tone accents. When colored elements carry text, combine a light tone with its dark counterpart; use middle tones only as standalone fills. Keep headings and body text neutral. Color clarifies hierarchy, category, and relationships — never mere decoration.
+- Compose information as a small narrative: frame data with context and a takeaway, create visual punctuation in longer pieces, and vary density to support the content. Avoid unbroken walls of prose, repetitive card grids, generic dashboard styling, and ornamental color.
+- Favor generous negative space, hairline rules, crisp geometry, accessible contrast, restrained imagery, and a few intentional expressive moments. Adapt the balance to the format: reports can feel editorial; games and tools should remain functional and interaction-first.
+- Treat this as design guidance, not a component library. Do not mention or reproduce named patterns, component specifications, class names, fixed dimensions, source templates, or external font requirements. Invent a fit-for-purpose composition using only self-contained HTML, CSS, and available system fonts.
+
 Output contract (strict):
 - Respond with exactly one complete, self-contained HTML document and nothing else. Start with <!doctype html>. No markdown fences, no commentary before or after.
 - Inline all CSS and JavaScript. Zero external requests: no CDNs, no external fonts, no remote images. If you need graphics, draw them with inline SVG, CSS, or canvas.
