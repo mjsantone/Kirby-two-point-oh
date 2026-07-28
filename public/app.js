@@ -3,15 +3,18 @@
 /* ---------------- State ---------------- */
 
 const MAX_ITEMS = 5;
-const MIN_R = 40;
-const MAX_R = 150;
+const DEFAULT_INFLUENCE = 100;
+const MIN_INFLUENCE = 1;
+const MAX_INFLUENCE = 100000;
 const PALETTE = ["#ff7ac3", "#7ae0ff", "#ffd166", "#8bffb0", "#c9a2ff"];
 
-let blobs = []; // {id, kind:'text'|'image', text?, dataUrl?, mediaType?, name?, x, y, r, color}
+let blobs = []; // {id, kind:'text'|'image', influence, text?, dataUrl?, mediaType?, name?, x, y, r, color}
 let nextId = 1;
 let selectedId = null;
 let fusing = false;
 let hintTimer = null;
+let magneticFrame = null;
+let lastMagneticAnchorId = null;
 
 const stage = document.getElementById("stage");
 const gooLayer = document.getElementById("goo-layer");
@@ -52,6 +55,7 @@ let lastImageDataUrl = "";
 let resultKind = null; // 'html' | 'image'
 let panelMode = "html"; // what this fuse run is producing: 'html' | 'image'
 let liveAttached = false; // iframe is following the server's live HTML stream
+let resultImageReady = null;
 let activeDiscoverEntry = null;
 let shareableDiscoverEntry = null;
 let discoverItems = [];
@@ -61,10 +65,211 @@ let discoverPreviewCheckQueued = false;
 /* ---------------- Rendering ---------------- */
 
 function weights() {
-  const total = blobs.reduce((s, b) => s + b.r * b.r, 0) || 1;
+  const total = blobs.reduce((sum, blob) => sum + blob.influence, 0) || 1;
   const map = {};
-  for (const b of blobs) map[b.id] = (100 * b.r * b.r) / total;
+  for (const blob of blobs) map[blob.id] = (100 * blob.influence) / total;
   return map;
+}
+
+function roundedWeights(weightMap) {
+  const entries = blobs.map((blob, index) => {
+    const exact = weightMap[blob.id];
+    const floor = Math.floor(exact);
+    return { id: blob.id, index, value: floor, remainder: exact - floor };
+  });
+  let remaining = 100 - entries.reduce((sum, entry) => sum + entry.value, 0);
+  entries
+    .sort((a, b) => b.remainder - a.remainder || a.index - b.index)
+    .slice(0, remaining)
+    .forEach((entry) => { entry.value += 1; });
+  for (const entry of entries.filter((candidate) => candidate.value === 0)) {
+    const donor = entries
+      .filter((candidate) => candidate.value > 1)
+      .sort((a, b) => b.value - a.value || b.remainder - a.remainder)[0];
+    if (!donor) break;
+    donor.value -= 1;
+    entry.value = 1;
+  }
+  return Object.fromEntries(entries.map((entry) => [entry.id, entry.value]));
+}
+
+function visualRadiusRange() {
+  const stageRect = stage.getBoundingClientRect();
+  const topbarRect = document.querySelector(".topbar").getBoundingClientRect();
+  const controlbarRect = document.querySelector(".controlbar").getBoundingClientRect();
+  const usableHeight = Math.max(240, controlbarRect.top - topbarRect.bottom - 24);
+  const min = Math.max(34, Math.min(48, stageRect.width * 0.09));
+  const widthLimit = stageRect.width * (stageRect.width < 600 ? 0.42 : 0.2);
+  const clusterLimit = stageRect.width < 600 && blobs.length >= 4
+    ? stageRect.width * 0.31
+    : Infinity;
+  const max = Math.max(min + 1, Math.min(220, widthLimit, clusterLimit, usableHeight / 2));
+  return { min, max };
+}
+
+function radiusForWeight(weight) {
+  const { min, max } = visualRadiusRange();
+  return Math.sqrt(min * min + (Math.max(0, Math.min(100, weight)) / 100) * (max * max - min * min));
+}
+
+function syncBlobRadii(weightMap = weights()) {
+  for (const blob of blobs) {
+    blob.r = radiusForWeight(weightMap[blob.id]);
+    if (!Number.isFinite(blob.x) || !Number.isFinite(blob.y)) continue;
+    const bounds = blobPositionBounds(blob.r);
+    blob.x = Math.min(bounds.maxX, Math.max(bounds.minX, blob.x));
+    blob.y = Math.min(bounds.maxY, Math.max(bounds.minY, blob.y));
+  }
+}
+
+function magneticAnchor() {
+  return [...blobs].sort((a, b) => b.influence - a.influence || a.id - b.id)[0] || null;
+}
+
+function normalizedAngle(angle) {
+  const fullTurn = Math.PI * 2;
+  return ((angle % fullTurn) + fullTurn) % fullTurn;
+}
+
+function largestOpenMagneticAngle(excludedId = null) {
+  const anchor = magneticAnchor();
+  const occupied = blobs
+    .filter((blob) => (
+      blob.id !== excludedId
+      && blob.id !== anchor?.id
+      && Number.isFinite(blob.magneticAngle)
+    ))
+    .map((blob) => normalizedAngle(blob.magneticAngle))
+    .sort((a, b) => a - b);
+  if (!occupied.length) return -Math.PI / 2;
+  let widestGap = -1;
+  let angle = -Math.PI / 2;
+  for (let index = 0; index < occupied.length; index++) {
+    const start = occupied[index];
+    const end = index === occupied.length - 1 ? occupied[0] + Math.PI * 2 : occupied[index + 1];
+    if (end - start > widestGap) {
+      widestGap = end - start;
+      angle = normalizedAngle(start + widestGap / 2);
+    }
+  }
+  return angle;
+}
+
+function spreadMagneticAngles(anchor = magneticAnchor()) {
+  const satellites = blobs.filter((blob) => blob.id !== anchor?.id && Number.isFinite(blob.magneticAngle));
+  if (satellites.length < 2) return;
+  const minGap = Math.min(0.9, (Math.PI * 2 * 0.72) / satellites.length);
+  for (let iteration = 0; iteration < 24; iteration++) {
+    const ordered = [...satellites].sort(
+      (a, b) => normalizedAngle(a.magneticAngle) - normalizedAngle(b.magneticAngle)
+    );
+    let adjusted = false;
+    for (let index = 0; index < ordered.length; index++) {
+      const current = ordered[index];
+      const next = ordered[(index + 1) % ordered.length];
+      const currentAngle = normalizedAngle(current.magneticAngle);
+      const nextAngle = normalizedAngle(next.magneticAngle);
+      const gap = normalizedAngle(nextAngle - currentAngle);
+      if (gap >= minGap) continue;
+      const correction = (minGap - gap) / 2;
+      current.magneticAngle = normalizedAngle(currentAngle - correction);
+      next.magneticAngle = normalizedAngle(nextAngle + correction);
+      adjusted = true;
+    }
+    if (!adjusted) break;
+  }
+}
+
+function magneticTargets() {
+  const targets = new Map();
+  if (!blobs.length) return targets;
+  const stageRect = stage.getBoundingClientRect();
+  const topbarRect = document.querySelector(".topbar").getBoundingClientRect();
+  const controlbarRect = document.querySelector(".controlbar").getBoundingClientRect();
+  const centerX = stageRect.width / 2;
+  const centerY = (
+    topbarRect.bottom - stageRect.top + controlbarRect.top - stageRect.top
+  ) / 2;
+  const anchor = magneticAnchor();
+  if (lastMagneticAnchorId !== anchor.id) {
+    for (const blob of blobs) {
+      if (blob.id === anchor.id) continue;
+      const dx = blob.x - anchor.x;
+      const dy = blob.y - anchor.y;
+      if (Number.isFinite(dx) && Number.isFinite(dy) && Math.hypot(dx, dy) > 1) {
+        blob.magneticAngle = Math.atan2(dy, dx);
+      }
+    }
+    lastMagneticAnchorId = anchor.id;
+    spreadMagneticAngles(anchor);
+  }
+  const anchorBounds = blobPositionBounds(anchor.r, stageRect);
+  const anchorTarget = {
+    x: Math.min(anchorBounds.maxX, Math.max(anchorBounds.minX, centerX)),
+    y: Math.min(anchorBounds.maxY, Math.max(anchorBounds.minY, centerY)),
+  };
+  targets.set(anchor.id, anchorTarget);
+  const satellites = blobs.filter((blob) => blob.id !== anchor.id);
+  satellites.forEach((blob) => {
+    if (!Number.isFinite(blob.magneticAngle)) {
+      blob.magneticAngle = largestOpenMagneticAngle(blob.id);
+    }
+    const angle = blob.magneticAngle;
+    const distance = (anchor.r + blob.r) * 0.96;
+    const bounds = blobPositionBounds(blob.r, stageRect);
+    targets.set(blob.id, {
+      x: Math.min(bounds.maxX, Math.max(bounds.minX, anchorTarget.x + Math.cos(angle) * distance)),
+      y: Math.min(bounds.maxY, Math.max(bounds.minY, anchorTarget.y + Math.sin(angle) * distance)),
+    });
+  });
+  return targets;
+}
+
+function stopMagneticSettle() {
+  if (magneticFrame) cancelAnimationFrame(magneticFrame);
+  magneticFrame = null;
+  for (const blob of blobs) {
+    blob.vx = 0;
+    blob.vy = 0;
+  }
+}
+
+function scheduleMagneticSettle() {
+  if (fusing || dragState || !blobs.length) return;
+  stopMagneticSettle();
+  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reducedMotion) {
+    const targets = magneticTargets();
+    for (const blob of blobs) Object.assign(blob, targets.get(blob.id));
+    render();
+    return;
+  }
+  const step = () => {
+    magneticFrame = null;
+    const targets = magneticTargets();
+    let moving = false;
+    for (const blob of blobs) {
+      const target = targets.get(blob.id);
+      if (!target) continue;
+      const dx = target.x - blob.x;
+      const dy = target.y - blob.y;
+      blob.vx = ((blob.vx || 0) + dx * 0.08) * 0.72;
+      blob.vy = ((blob.vy || 0) + dy * 0.08) * 0.72;
+      blob.x += blob.vx;
+      blob.y += blob.vy;
+      if (Math.abs(dx) > 0.25 || Math.abs(dy) > 0.25 || Math.abs(blob.vx) > 0.1 || Math.abs(blob.vy) > 0.1) {
+        moving = true;
+      } else {
+        blob.x = target.x;
+        blob.y = target.y;
+        blob.vx = 0;
+        blob.vy = 0;
+      }
+    }
+    render();
+    if (moving) magneticFrame = requestAnimationFrame(step);
+  };
+  magneticFrame = requestAnimationFrame(step);
 }
 
 function fontSizeFor(r) {
@@ -73,6 +278,14 @@ function fontSizeFor(r) {
 
 function render() {
   const w = weights();
+  syncBlobRadii(w);
+  const displayWeights = roundedWeights(w);
+  const anchor = blobs.length
+    ? [...blobs].sort((a, b) => b.influence - a.influence || a.id - b.id)[0]
+    : null;
+  const stageRect = stage.getBoundingClientRect();
+  const topbarRect = document.querySelector(".topbar").getBoundingClientRect();
+  const controlbarRect = document.querySelector(".controlbar").getBoundingClientRect();
   const three = window.Stage3D?.active;
   gooLayer.innerHTML = "";
   contentLayer.innerHTML = "";
@@ -133,8 +346,17 @@ function render() {
 
     const chip = document.createElement("div");
     chip.className = "weight-chip";
-    chip.style.cssText = `left:${b.x}px;top:${b.y + b.r + 8}px;`;
-    chip.textContent = Math.round(w[b.id]) + "%";
+    const dx = anchor && b.id !== anchor.id ? b.x - anchor.x : 0;
+    const dy = anchor && b.id !== anchor.id ? b.y - anchor.y : 1;
+    const distance = Math.hypot(dx, dy) || 1;
+    const chipDistance = b.r + 18;
+    const chipX = Math.min(stageRect.width - 30, Math.max(30, b.x + (dx / distance) * chipDistance));
+    const chipY = Math.min(
+      controlbarRect.top - stageRect.top - 16,
+      Math.max(topbarRect.bottom - stageRect.top + 16, b.y + (dy / distance) * chipDistance)
+    );
+    chip.style.cssText = `left:${chipX}px;top:${chipY}px;`;
+    chip.textContent = displayWeights[b.id] + "%";
     contentLayer.appendChild(chip);
   }
 
@@ -205,7 +427,12 @@ function addBlob(partial) {
     flashHint(`Max ${MAX_ITEMS} ingredients — remove one first.`);
     return null;
   }
-  const radius = partial.r || 70;
+  const { r: _legacyRadius, influence: requestedInfluence, ...blobPartial } = partial;
+  const influence = requestedInfluence || (blobs.length
+    ? blobs.reduce((sum, blob) => sum + blob.influence, 0) / blobs.length
+    : DEFAULT_INFLUENCE);
+  const projectedTotal = blobs.reduce((sum, blob) => sum + blob.influence, 0) + influence;
+  const radius = radiusForWeight((100 * influence) / projectedTotal);
   const requestedSpot = partial.x != null ? { x: partial.x, y: partial.y } : stageCenterSpot(radius);
   const bounds = blobPositionBounds(radius);
   const spot = {
@@ -214,15 +441,21 @@ function addBlob(partial) {
   };
   const b = {
     id: nextId++,
-    r: 70,
+    influence,
+    r: radius,
+    magneticAngle: Number.isFinite(blobPartial.magneticAngle)
+      ? blobPartial.magneticAngle
+      : largestOpenMagneticAngle(),
     color: PALETTE[(nextId - 2) % PALETTE.length],
-    ...partial,
+    ...blobPartial,
     x: spot.x,
     y: spot.y,
   };
   blobs.push(b);
+  spreadMagneticAngles();
   selectedId = b.id;
   render();
+  scheduleMagneticSettle();
   return b;
 }
 
@@ -230,13 +463,16 @@ function removeBlob(id) {
   blobs = blobs.filter((b) => b.id !== id);
   if (selectedId === id) selectedId = null;
   render();
+  scheduleMagneticSettle();
 }
 
 function resizeBlob(id, delta) {
   const b = blobs.find((x) => x.id === id);
-  if (!b) return;
-  b.r = Math.min(MAX_R, Math.max(MIN_R, b.r + delta));
+  if (!b || blobs.length === 1) return;
+  const factor = Math.pow(1.15, delta / 6);
+  b.influence = Math.min(MAX_INFLUENCE, Math.max(MIN_INFLUENCE, b.influence * factor));
   render();
+  scheduleMagneticSettle();
 }
 
 function flashHint(msg) {
@@ -387,7 +623,6 @@ async function addImageFiles(files, dropX, dropY) {
         mediaType,
         color, // sampled dominant color — the goo inherits the photo's palette
         name: file.name,
-        r: 85,
         x: dropX,
         y: dropY,
       });
@@ -517,6 +752,7 @@ contentLayer.addEventListener("pointerdown", (e) => {
   const id = Number(el.dataset.id);
   const b = blobs.find((x) => x.id === id);
   if (!b) return;
+  stopMagneticSettle();
   const rect = stage.getBoundingClientRect();
   dragState = {
     id,
@@ -549,8 +785,23 @@ contentLayer.addEventListener("pointerup", (e) => {
   dragState = null;
   if (!moved) {
     selectedId = selectedId === id ? null : id;
+  } else {
+    const blob = blobs.find((item) => item.id === id);
+    const anchor = magneticAnchor();
+    if (blob && anchor) {
+      if (blob.id === anchor.id) {
+        for (const satellite of blobs) {
+          if (satellite.id === anchor.id) continue;
+          satellite.magneticAngle = Math.atan2(satellite.y - blob.y, satellite.x - blob.x);
+        }
+      } else {
+        blob.magneticAngle = Math.atan2(blob.y - anchor.y, blob.x - anchor.x);
+      }
+      spreadMagneticAngles(anchor);
+    }
   }
   render();
+  scheduleMagneticSettle();
 });
 
 /* Click empty stage clears selection */
@@ -617,30 +868,6 @@ document.querySelectorAll(".otype").forEach((btn) => {
   });
 });
 
-/* ---------------- Proximity clusters ---------------- */
-
-function computeClusters() {
-  // Union-find over blobs whose circles touch (goo-merged on screen).
-  // Returns arrays of 1-based indices matching the INGREDIENT numbering.
-  const parent = blobs.map((_, i) => i);
-  const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
-  for (let i = 0; i < blobs.length; i++) {
-    for (let j = i + 1; j < blobs.length; j++) {
-      const a = blobs[i], b = blobs[j];
-      if (Math.hypot(a.x - b.x, a.y - b.y) <= a.r + b.r + 14) {
-        parent[find(i)] = find(j);
-      }
-    }
-  }
-  const groups = new Map();
-  blobs.forEach((_, i) => {
-    const root = find(i);
-    if (!groups.has(root)) groups.set(root, []);
-    groups.get(root).push(i + 1);
-  });
-  return [...groups.values()];
-}
-
 /* ---------------- Discover ---------------- */
 
 function formatDiscoverDate(value) {
@@ -671,6 +898,7 @@ function generatedDiscoverTitle(source, fallback = "Untitled artifact") {
 }
 
 const ARTIFACT_VIEWER_INSET_STYLE = `<style data-fuse-viewer-inset>html>body{border-top:76px solid transparent!important}@media(max-width:480px){html>body{border-top-width:60px!important}}</style>`;
+const ARTIFACT_FIRST_PAINT_SCRIPT = `<script data-fuse-first-paint>(()=>{let sent=false,queued=false;const meaningful=()=>{if(!document.body)return false;return[document.body,...document.body.querySelectorAll("*")].some((element)=>{if(/^(SCRIPT|STYLE|LINK|META|NOSCRIPT)$/.test(element.tagName))return false;const rect=element.getBoundingClientRect(),style=getComputedStyle(element);if(rect.width<8||rect.height<8||rect.bottom<=0||rect.right<=0||rect.top>=innerHeight||rect.left>=innerWidth||style.display==="none"||style.visibility==="hidden"||Number(style.opacity)===0)return false;if(element.matches("canvas,svg,video,button,input,select,textarea"))return true;if(element.tagName==="IMG"&&element.complete&&element.naturalWidth>0)return true;if(element!==document.body&&(element.textContent||"").trim())return true;return style.backgroundImage!=="none"||(style.backgroundColor!=="transparent"&&style.backgroundColor!=="rgba(0, 0, 0, 0)")})};const check=()=>{if(sent||queued)return;queued=true;requestAnimationFrame(()=>requestAnimationFrame(()=>{queued=false;if(sent||!meaningful())return;sent=true;observer.disconnect();parent.postMessage({type:"fuse:first-paint"},"*")}))};const observer=new MutationObserver(check);observer.observe(document.documentElement,{childList:true,subtree:true,characterData:true});addEventListener("DOMContentLoaded",check,{once:true});addEventListener("load",check,{once:true});check()})();</script>`;
 
 function injectDocumentHead(source, content) {
   if (/<head[\s>]/i.test(source)) return source.replace(/<head([^>]*)>/i, `<head$1>${content}`);
@@ -710,6 +938,7 @@ async function loadDiscoverPreview(frame, entry) {
     frame.srcdoc = sandboxStoredHtml(html, { hideScrollbars: true });
   } catch {
     frame.dataset.failed = "true";
+    entry.onTitle(entry.item.title);
   }
 }
 
@@ -733,6 +962,13 @@ function observeDiscoverPreview(frame, item, onTitle) {
   scheduleDiscoverPreviewCheck();
 }
 
+function discoverTileSize(index) {
+  const position = index % 11;
+  if (position === 0) return "feature";
+  if (position === 3 || position === 6) return "wide";
+  return "single";
+}
+
 function renderDiscoverItems() {
   pendingDiscoverPreviews.clear();
   discoverGrid.replaceChildren();
@@ -740,7 +976,7 @@ function renderDiscoverItems() {
 
   for (const [index, item] of discoverItems.entries()) {
     const card = document.createElement("article");
-    card.className = "discover-card";
+    card.className = `discover-card discover-card-${discoverTileSize(index)}`;
     card.style.animationDelay = `${Math.min(index, 8) * 30}ms`;
 
     const preview = document.createElement("div");
@@ -770,17 +1006,27 @@ function renderDiscoverItems() {
     const metadata = document.createElement("div");
     metadata.className = "discover-card-meta";
     const title = document.createElement("h2");
-    title.textContent = item.title;
+    if (item.kind === "html") {
+      title.className = "discover-title-loading";
+      title.setAttribute("aria-hidden", "true");
+      metadata.setAttribute("aria-busy", "true");
+    } else {
+      title.textContent = item.title;
+    }
     const date = document.createElement("span");
     date.className = "discover-date";
     date.textContent = formatDiscoverDate(item.createdAt);
     metadata.append(title, date);
 
-    card.append(preview, metadata);
+    preview.appendChild(metadata);
+    card.appendChild(preview);
     discoverGrid.appendChild(card);
     if (item.kind === "html") {
       observeDiscoverPreview(previewFrame, item, (displayTitle) => {
         title.textContent = displayTitle;
+        title.classList.remove("discover-title-loading");
+        title.removeAttribute("aria-hidden");
+        metadata.removeAttribute("aria-busy");
         previewFrame.title = `Preview of ${displayTitle}`;
         openButton.setAttribute("aria-label", `Open ${displayTitle}`);
       });
@@ -810,7 +1056,7 @@ async function loadDiscover() {
 }
 
 function openDiscover({ pushHistory = true } = {}) {
-  clearTimeout(panelRevealTimer);
+  resetResultTransition();
   resultPanel.hidden = true;
   activeDiscoverEntry = null;
   shareableDiscoverEntry = null;
@@ -889,6 +1135,7 @@ async function syncViewFromLocation() {
     shareableDiscoverEntry = null;
     openDiscover({ pushHistory: false });
   } else {
+    resetResultTransition();
     resultPanel.hidden = true;
     activeDiscoverEntry = null;
     shareableDiscoverEntry = null;
@@ -905,6 +1152,7 @@ fuseBtn.addEventListener("click", fuse);
 async function fuse() {
   if (fusing || blobs.length === 0) return;
   fusing = true;
+  stopMagneticSettle();
   fuseBtn.classList.add("busy");
   fuseBtn.textContent = "Fusing…";
   render();
@@ -939,8 +1187,6 @@ async function fuse() {
     }
     return { kind: "text", text: b.text, weightPct: w[b.id] };
   });
-  const clusters = computeClusters();
-
   openResultPanel(outputType === "image" ? "image" : "html");
   let raw = "";
 
@@ -948,7 +1194,7 @@ async function fuse() {
     const res = await fetch("/api/fuse", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items, directive: directiveInput.value.trim(), outputType, clusters }),
+      body: JSON.stringify({ items, directive: directiveInput.value.trim(), outputType }),
     });
 
     if (!res.ok && !res.headers.get("content-type")?.includes("ndjson")) {
@@ -1001,55 +1247,87 @@ async function fuse() {
           resultMeta.textContent = msg.sourceImages
             ? `blending ${msg.sourceImages} source image${msg.sourceImages > 1 ? "s" : ""} with ${msg.imageModel}`
             : `sending the fused prompt to ${msg.imageModel}`;
+          showImagePaintLoader();
         } else if (msg.t === "image") {
           lastImageDataUrl = `data:${msg.mediaType};base64,${msg.b64}`;
+          resultImageReady = prepareResultImage(lastImageDataUrl);
         } else if (msg.t === "done") {
-          finishResult(raw, msg);
+          await finishResult(raw, msg);
         } else if (msg.t === "err") {
           throw new Error(msg.error);
         }
       }
     }
   } catch (err) {
-    showResultPanel();
     resultStatus.textContent = "That didn't work";
     resultMeta.textContent = err.message;
-    if (!raw) {
+    resultImageWrap.classList.remove("visible", "loading");
+    resultImageWrap.removeAttribute("aria-busy");
+    resultImageWrap.removeAttribute("aria-label");
+    if (!raw || panelMode === "image") {
       resultFrame.classList.remove("visible");
       resultCode.classList.add("visible");
     }
+    showResultPanel();
   } finally {
     fusing = false;
     fuseBtn.classList.remove("busy");
     fuseBtn.textContent = "Fuse";
-    window.Stage3D?.release();
-    document.body.classList.remove("collapsing");
     render();
   }
 }
 
 /* ---------------- Result panel ---------------- */
 
+const RESULT_REVEAL_TIMEOUT_MS = 60000;
 let panelRevealTimer = null;
+let panelTransitionTimer = null;
 
-function showResultPanel() {
+function resetResultTransition({ releaseStage = true } = {}) {
+  clearTimeout(panelRevealTimer);
+  clearTimeout(panelTransitionTimer);
+  panelRevealTimer = null;
+  panelTransitionTimer = null;
+  resultPanel.classList.remove("waiting-for-result", "revealing-result");
+  resultImageWrap.classList.remove("loading");
+  resultImageWrap.removeAttribute("aria-busy");
+  resultImageWrap.removeAttribute("aria-label");
+  document.body.classList.remove("collapsing");
+  document.body.classList.remove("result-revealing");
+  if (releaseStage) window.Stage3D?.release();
+}
+
+function revealResultSurface() {
   clearTimeout(panelRevealTimer);
   panelRevealTimer = null;
+  if (!resultPanel.classList.contains("waiting-for-result")) return;
+  resultPanel.classList.add("revealing-result");
+  document.body.classList.add("result-revealing");
+  requestAnimationFrame(() => resultPanel.classList.remove("waiting-for-result"));
+  clearTimeout(panelTransitionTimer);
+  panelTransitionTimer = setTimeout(() => {
+    resultPanel.classList.remove("revealing-result");
+    document.body.classList.remove("result-revealing");
+    panelTransitionTimer = null;
+  }, 240);
+  document.body.classList.remove("collapsing");
+  window.Stage3D?.release();
+}
+
+function showResultPanel() {
   resultPanel.hidden = false;
+  revealResultSurface();
 }
 
 function openResultPanel(mode) {
   activeDiscoverEntry = null;
   shareableDiscoverEntry = null;
   panelMode = mode;
-  clearTimeout(panelRevealTimer);
-  if (window.Stage3D?.active) {
-    // Let the collapse animation play before the panel covers the stage
-    resultPanel.hidden = true;
-    panelRevealTimer = setTimeout(showResultPanel, 1150);
-  } else {
-    resultPanel.hidden = false;
-  }
+  resetResultTransition({ releaseStage: false });
+  resultPanel.hidden = false;
+  resultPanel.classList.add("waiting-for-result");
+  document.body.classList.add("collapsing");
+  panelRevealTimer = setTimeout(revealResultSurface, RESULT_REVEAL_TIMEOUT_MS);
   resultStatus.textContent = "Fusing…";
   resultMeta.textContent = "streaming from the model";
   resultCode.textContent = "";
@@ -1063,6 +1341,7 @@ function openResultPanel(mode) {
   setResultAction(resultSave, "Save to Discover", "＋");
   lastArtifactHtml = "";
   lastImageDataUrl = "";
+  resultImageReady = null;
   resultKind = null;
   liveAttached = false;
   resultFrame.removeAttribute("srcdoc");
@@ -1074,6 +1353,45 @@ function openResultPanel(mode) {
     resultFrame.classList.remove("visible");
     resultCode.classList.add("visible");
   }
+}
+
+window.addEventListener("message", (event) => {
+  if (event.source !== resultFrame.contentWindow || event.data?.type !== "fuse:first-paint") return;
+  revealResultSurface();
+});
+
+function showImagePaintLoader() {
+  resultFrame.classList.remove("visible");
+  resultCode.classList.remove("visible");
+  resultImageWrap.classList.add("visible", "loading");
+  resultImageWrap.setAttribute("aria-busy", "true");
+  resultImageWrap.setAttribute("aria-label", "GPT is painting the image");
+  revealResultSurface();
+}
+
+function prepareResultImage(source) {
+  if (typeof resultImage.decode === "function") {
+    resultImage.src = source;
+    return resultImage.decode();
+  }
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      resultImage.removeEventListener("load", handleLoad);
+      resultImage.removeEventListener("error", handleError);
+    };
+    const handleLoad = () => {
+      cleanup();
+      resolve();
+    };
+    const handleError = () => {
+      cleanup();
+      reject(new Error("The generated image couldn't be displayed."));
+    };
+    resultImage.addEventListener("load", handleLoad);
+    resultImage.addEventListener("error", handleError);
+    resultImage.src = source;
+    if (resultImage.complete && resultImage.naturalWidth > 0) handleLoad();
+  });
 }
 
 function streamToCode(raw) {
@@ -1094,19 +1412,26 @@ function extractHtml(raw) {
   return s;
 }
 
-function finishResult(raw, meta) {
-  showResultPanel();
+async function finishResult(raw, meta) {
   resultCode.classList.remove("visible");
   if (lastImageDataUrl) {
     resultKind = "image";
-    resultImage.src = lastImageDataUrl;
     resultImageWrap.classList.add("visible");
+    if (!resultImageReady) resultImageReady = prepareResultImage(lastImageDataUrl);
+    await resultImageReady;
+    resultImageWrap.classList.remove("loading");
+    resultImageWrap.removeAttribute("aria-busy");
+    resultImageWrap.removeAttribute("aria-label");
+    revealResultSurface();
   } else {
     resultKind = "html";
     lastArtifactHtml = extractHtml(raw);
     if (!liveAttached) {
       // Live streaming never engaged — load the finished document directly.
-      resultFrame.srcdoc = injectDocumentHead(lastArtifactHtml, ARTIFACT_VIEWER_INSET_STYLE);
+      resultFrame.srcdoc = injectDocumentHead(
+        lastArtifactHtml,
+        ARTIFACT_VIEWER_INSET_STYLE + ARTIFACT_FIRST_PAINT_SCRIPT
+      );
     }
     resultFrame.classList.add("visible");
   }
@@ -1175,7 +1500,7 @@ function downloadBlob(blob, name) {
 }
 
 async function openDiscoverEntry(item, { pushHistory = true } = {}) {
-  clearTimeout(panelRevealTimer);
+  resetResultTransition();
   activeDiscoverEntry = item;
   shareableDiscoverEntry = item;
   if (pushHistory && location.pathname !== discoverEntryPath(item)) {
@@ -1192,6 +1517,7 @@ async function openDiscoverEntry(item, { pushHistory = true } = {}) {
   resultCode.classList.remove("visible");
   resultFrame.classList.remove("visible");
   resultImageWrap.classList.remove("visible");
+  resultImageWrap.classList.remove("loading");
   resultImage.removeAttribute("src");
   resultFrame.removeAttribute("srcdoc");
   resultFrame.src = "about:blank";
@@ -1304,12 +1630,12 @@ resultRemix.addEventListener("click", async () => {
         dataUrl: await blobToDataUrl(imageBlob),
         mediaType: imageBlob.type || "image/png",
         name: discoverDownloadName(activeDiscoverEntry),
-        r: 85,
       });
     } else {
-      addBlob({ kind: "artifact", html: await response.text(), label, r: 80 });
+      addBlob({ kind: "artifact", html: await response.text(), label });
     }
     activeDiscoverEntry = null;
+    resetResultTransition();
     resultPanel.hidden = true;
     closeDiscover();
     render();
@@ -1321,17 +1647,18 @@ resultRemix.addEventListener("click", async () => {
       dataUrl: lastImageDataUrl,
       mediaType: "image/png",
       name: "fusion.png",
-      r: 85,
     });
   } else if (resultKind === "html" && lastArtifactHtml) {
-    addBlob({ kind: "artifact", html: lastArtifactHtml, label, r: 80 });
+    addBlob({ kind: "artifact", html: lastArtifactHtml, label });
   }
   resultPanel.hidden = true;
+  resetResultTransition();
   render();
 });
 
 document.getElementById("result-close").addEventListener("click", () => {
   const returningToDiscover = Boolean(activeDiscoverEntry);
+  resetResultTransition();
   resultPanel.hidden = true;
   activeDiscoverEntry = null;
   shareableDiscoverEntry = null;
@@ -1343,7 +1670,13 @@ document.getElementById("result-close").addEventListener("click", () => {
 
 /* ---------------- Init ---------------- */
 
-window.addEventListener("resize", render);
-window.addEventListener("stage3d-ready", render);
+window.addEventListener("resize", () => {
+  render();
+  scheduleMagneticSettle();
+});
+window.addEventListener("stage3d-ready", () => {
+  render();
+  scheduleMagneticSettle();
+});
 render();
 syncViewFromLocation();

@@ -15,6 +15,7 @@
     "@anthropic-ai/sdk": "^0.74.0",
     "@azure/storage-blob": "12.27.0",
     "express": "^4.21.2",
+    "open-sans-fonts": "1.6.2",
     "pureimage": "^0.4.20",
     "three": "^0.185.1"
   },

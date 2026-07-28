@@ -21,6 +21,9 @@ const SUBTRACT = 12;
 const MARGIN = 60; // px of field space around the outermost ball
 const VIS_BOOST = 1.12; // goo reads slightly larger than the logical circle
 const WOBBLE_PX = 5;
+const DEPTH_BOB_PX = 12;
+const MAGNETIC_BREATH_AMOUNT = 0.018;
+const MAGNETIC_BREATH_SPEED = 1.1;
 const TRAIL_SPEED_THRESHOLD = 1;
 const TRAIL_SPEED_SCALE = 7;
 const TRAIL_MAX_FRAME_SPEED = 18;
@@ -35,11 +38,14 @@ const TRAIL_SAMPLES = [
 ];
 
 const stage = document.getElementById("stage");
+const reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
 
 let renderer;
 try {
   renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 0.92;
 } catch (err) {
   console.warn("stage3d: WebGL unavailable, keeping SVG goo.", err);
 }
@@ -56,10 +62,11 @@ if (renderer) {
   const pmrem = new THREE.PMREMGenerator(renderer);
   scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.05).texture;
 
-  const key = new THREE.DirectionalLight(0xffffff, 1.0);
-  key.position.set(-0.4, 1, 0.9);
+  const key = new THREE.DirectionalLight(0xfff8ef, 0.38);
+  key.position.set(-0.6, 1, 1.2);
   scene.add(key);
-  scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x2a1650, 0.5));
+  scene.add(new THREE.HemisphereLight(0xe8f1ff, 0x34373d, 1.05));
+  scene.add(new THREE.AmbientLight(0xffffff, 0.24));
 
   /* ---- surface material with per-ball color/texture blending ----
      Instead of vertex colors, a shader injection colors every fragment from
@@ -77,15 +84,19 @@ if (renderer) {
     uRad: { value: new Float32Array(MAXB).fill(1) },
     uBallCol: { value: Array.from({ length: MAXB }, () => new THREE.Color(1, 1, 1)) },
     uHasTex: { value: new Float32Array(MAXB) },
+    uTexAspect: { value: new Float32Array(MAXB).fill(1) },
+    uCollapse: { value: 0 },
   };
   for (let i = 0; i < MAXB; i++) ballUniforms[`uTex${i}`] = { value: placeholderTex };
 
   const material = new THREE.MeshPhysicalMaterial({
-    roughness: 0.36,
+    roughness: 0.62,
     metalness: 0.0,
-    clearcoat: 0.5,
-    clearcoatRoughness: 0.28,
-    envMapIntensity: 0.65,
+    clearcoat: 0.08,
+    clearcoatRoughness: 0.72,
+    specularIntensity: 0.22,
+    ior: 1.32,
+    envMapIntensity: 0.48,
   });
 
   material.onBeforeCompile = (shader) => {
@@ -106,33 +117,84 @@ uniform vec3 uPos[${MAXB}];
 uniform float uRad[${MAXB}];
 uniform vec3 uBallCol[${MAXB}];
 uniform float uHasTex[${MAXB}];
+uniform float uTexAspect[${MAXB}];
+uniform float uCollapse;
 uniform sampler2D uTex0; uniform sampler2D uTex1; uniform sampler2D uTex2; uniform sampler2D uTex3; uniform sampler2D uTex4;
-vec2 fuseBallUv(vec3 p, vec3 c, float r) {
-  vec2 uv = (p.xy - c.xy) / (2.3 * max(r, 1.0));
-  return clamp(vec2(uv.x + 0.5, uv.y + 0.5), 0.001, 0.999);
+vec4 fuseTexture(sampler2D image, vec2 uv, float blur) {
+  vec2 offset = vec2(blur);
+  return texture2D(image, uv) * 0.4
+    + texture2D(image, clamp(uv + vec2(offset.x, 0.0), 0.001, 0.999)) * 0.15
+    + texture2D(image, clamp(uv - vec2(offset.x, 0.0), 0.001, 0.999)) * 0.15
+    + texture2D(image, clamp(uv + vec2(0.0, offset.y), 0.001, 0.999)) * 0.15
+    + texture2D(image, clamp(uv - vec2(0.0, offset.y), 0.001, 0.999)) * 0.15;
+}
+vec2 fuseBallUv(vec3 p, int index) {
+  vec2 center = uPos[index].xy;
+  float radius = max(uRad[index], 1.0);
+  vec2 local = (p.xy - center) / (2.3 * radius);
+  float selfField = radius * radius / (dot(p.xy - center, p.xy - center) + 80.0);
+  for (int j = 0; j < ${MAXB}; j++) {
+    if (j >= uCount) break;
+    if (j == index) continue;
+    vec2 between = uPos[j].xy - center;
+    float centerDistance = length(between);
+    vec2 direction = between / max(centerDistance, 1.0);
+    float reach = radius + uRad[j];
+    float merge = 1.0 - smoothstep(0.78, 1.18, centerDistance / max(reach, 1.0));
+    vec2 otherDelta = p.xy - uPos[j].xy;
+    float otherField = uRad[j] * uRad[j] / (dot(otherDelta, otherDelta) + 80.0);
+    float neck = smoothstep(0.12, 0.55, otherField / max(selfField + otherField, 0.0001));
+    float along = dot(local, direction);
+    local -= direction * along * merge * neck * 0.42;
+    vec2 perpendicular = vec2(-direction.y, direction.x);
+    local += perpendicular * sin(along * 5.0) * merge * neck * 0.025;
+  }
+  vec2 uv = local + 0.5;
+  float aspect = max(uTexAspect[index], 0.001);
+  if (aspect > 1.0) {
+    uv.x = (uv.x - 0.5) / aspect + 0.5;
+  } else {
+    uv.y = (uv.y - 0.5) * aspect + 0.5;
+  }
+  return clamp(uv, 0.001, 0.999);
 }`
       )
       .replace(
         "#include <color_fragment>",
         `#include <color_fragment>
 {
-  vec4 t0 = texture2D(uTex0, fuseBallUv(vBallWorld, uPos[0], uRad[0]));
-  vec4 t1 = texture2D(uTex1, fuseBallUv(vBallWorld, uPos[1], uRad[1]));
-  vec4 t2 = texture2D(uTex2, fuseBallUv(vBallWorld, uPos[2], uRad[2]));
-  vec4 t3 = texture2D(uTex3, fuseBallUv(vBallWorld, uPos[3], uRad[3]));
-  vec4 t4 = texture2D(uTex4, fuseBallUv(vBallWorld, uPos[4], uRad[4]));
+  float textureBlur = smoothstep(0.08, 1.0, uCollapse) * 0.024;
+  vec4 t0 = fuseTexture(uTex0, fuseBallUv(vBallWorld, 0), textureBlur);
+  vec4 t1 = fuseTexture(uTex1, fuseBallUv(vBallWorld, 1), textureBlur);
+  vec4 t2 = fuseTexture(uTex2, fuseBallUv(vBallWorld, 2), textureBlur);
+  vec4 t3 = fuseTexture(uTex3, fuseBallUv(vBallWorld, 3), textureBlur);
+  vec4 t4 = fuseTexture(uTex4, fuseBallUv(vBallWorld, 4), textureBlur);
   vec3 acc = vec3(0.0);
   float wsum = 0.0;
   for (int i = 0; i < ${MAXB}; i++) {
     if (i >= uCount) break;
     vec3 dp = vBallWorld - uPos[i];
-    float w = pow(uRad[i] * uRad[i] / (dot(dp, dp) + 60.0), 1.4);
+    float w = pow(uRad[i] * uRad[i] / (dot(dp, dp) + 60.0), 2.6);
     vec4 t = (i == 0) ? t0 : (i == 1) ? t1 : (i == 2) ? t2 : (i == 3) ? t3 : t4;
     vec3 c = mix(uBallCol[i], t.rgb, t.a * uHasTex[i]);
     acc += c * w;
     wsum += w;
   }
-  diffuseColor.rgb = acc / max(wsum, 1e-4);
+  vec3 fusedColor = acc / max(wsum, 1e-4);
+  float luminance = dot(fusedColor, vec3(0.2126, 0.7152, 0.0722));
+  fusedColor = mix(fusedColor, vec3(luminance), uCollapse * 0.16);
+  fusedColor = mix(vec3(0.5), fusedColor, 1.0 - uCollapse * 0.1);
+  diffuseColor.rgb = fusedColor;
+}`
+      )
+      .replace(
+        "#include <normal_fragment_maps>",
+        `#include <normal_fragment_maps>
+{
+  vec3 wrapDirection = normalize(vec3(-0.35, 0.5, 0.8));
+  float wrapLight = smoothstep(-0.3, 1.0, dot(normal, wrapDirection));
+  float facing = clamp(normal.z, 0.0, 1.0);
+  diffuseColor.rgb *= mix(0.76, 1.04, wrapLight) * mix(0.9, 1.0, facing);
 }`
       );
   };
@@ -168,6 +230,7 @@ vec2 fuseBallUv(vec3 p, vec3 c, float r) {
   const texLoader = new THREE.TextureLoader();
   let logical = []; // latest list from app.js
   let collapseTo = null; // {x, y} while a fusion is running
+  let collapseAmount = 0;
 
   function loadBallTexture(state, dataUrl) {
     texLoader.load(dataUrl, (tex) => {
@@ -175,6 +238,10 @@ vec2 fuseBallUv(vec3 p, vec3 c, float r) {
       tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
       tex.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy());
       state.tex = tex;
+      const image = tex.image || {};
+      const imageWidth = image.naturalWidth || image.videoWidth || image.width || 1;
+      const imageHeight = image.naturalHeight || image.videoHeight || image.height || 1;
+      state.texAspect = imageWidth / imageHeight;
     });
   }
 
@@ -192,6 +259,7 @@ vec2 fuseBallUv(vec3 p, vec3 c, float r) {
           colorLin: new THREE.Color(b.color).convertSRGBToLinear(),
           tex: null,
           texUrl: null,
+          texAspect: 1,
           phase: Math.random() * Math.PI * 2,
           trailVx: 0,
           trailVy: 0,
@@ -215,9 +283,11 @@ vec2 fuseBallUv(vec3 p, vec3 c, float r) {
 
   function collapse(center) {
     collapseTo = center;
+    if (reducedMotionQuery.matches) collapseAmount = 1;
   }
   function release() {
     collapseTo = null;
+    if (reducedMotionQuery.matches) collapseAmount = 0;
   }
 
   /* ---- render loop ---- */
@@ -227,6 +297,31 @@ vec2 fuseBallUv(vec3 p, vec3 c, float r) {
   function frame() {
     requestAnimationFrame(frame);
     const t = clock.getElapsedTime();
+    const collapseTarget = collapseTo ? 1 : 0;
+    collapseAmount += (collapseTarget - collapseAmount) * (collapseTo ? 0.035 : 0.09);
+    if (Math.abs(collapseTarget - collapseAmount) < 0.001) collapseAmount = collapseTarget;
+    ballUniforms.uCollapse.value = collapseAmount;
+
+    let pulseX = 0;
+    let pulseY = 0;
+    let pulseWeight = 0;
+    for (const blob of logical) {
+      const weight = blob.r * blob.r;
+      pulseX += blob.x * weight;
+      pulseY += blob.y * weight;
+      pulseWeight += weight;
+    }
+    pulseX /= Math.max(pulseWeight, 1);
+    pulseY /= Math.max(pulseWeight, 1);
+    const magneticBreathActive = (
+      logical.length > 1
+      && !collapseTo
+      && !reducedMotionQuery.matches
+      && !logical.some((blob) => blob.dragging)
+    );
+    const magneticScale = magneticBreathActive
+      ? 1 + Math.sin(t * MAGNETIC_BREATH_SPEED) * MAGNETIC_BREATH_AMOUNT
+      : 1;
 
     if (balls.size === 0) {
       mc.reset();
@@ -241,10 +336,10 @@ vec2 fuseBallUv(vec3 p, vec3 c, float r) {
     for (const b of logical) {
       const s = balls.get(b.id);
       if (!s) continue;
-      const tx = collapseTo ? collapseTo.x : b.x;
-      const ty = collapseTo ? collapseTo.y : b.y;
+      const tx = collapseTo ? collapseTo.x : pulseX + (b.x - pulseX) * magneticScale;
+      const ty = collapseTo ? collapseTo.y : pulseY + (b.y - pulseY) * magneticScale;
       const tr = collapseTo ? b.r * 0.82 : b.r;
-      const k = collapseTo ? 0.045 : b.dragging ? 1 : 0.16;
+      const k = reducedMotionQuery.matches ? 1 : collapseTo ? 0.045 : b.dragging ? 1 : 0.16;
       const previousX = s.x;
       const previousY = s.y;
       s.x += (tx - s.x) * k;
@@ -275,19 +370,35 @@ vec2 fuseBallUv(vec3 p, vec3 c, float r) {
       const wx = s.x + Math.sin(t * 0.7 + s.phase) * WOBBLE_PX * squish;
       const wy = s.y + Math.cos(t * 0.9 + s.phase * 1.7) * WOBBLE_PX * squish;
       const wr = (s.r * VIS_BOOST + 8) * (1 + 0.05 * Math.sin(t * 1.4 + s.phase));
-      const wz = 0.12 * Math.sin(t * 0.55 + s.phase * 2.3); // gentle depth bob, ±px added later
+      const wz = DEPTH_BOB_PX * Math.sin(t * 0.55 + s.phase * 2.3);
 
-      view.push({ x: wx, y: wy, r: wr, z: wz, trailX, trailY, trailAmount, colorLin: s.colorLin, tex: s.tex });
+      view.push({
+        x: wx,
+        y: wy,
+        r: wr,
+        z: wz,
+        trailX,
+        trailY,
+        trailAmount,
+        colorLin: s.colorLin,
+        tex: s.tex,
+        texAspect: s.texAspect || 1,
+      });
       minX = Math.min(minX, wx - wr);
       maxX = Math.max(maxX, wx + wr);
       minY = Math.min(minY, wy - wr);
       maxY = Math.max(maxY, wy + wr);
     }
 
-    // Fit the field cube snugly around the balls (square, with margin)
+    // Fit the field cube snugly around the balls. During collapse, overlapping
+    // fields add together and create a surface larger than any one radius, so
+    // reserve space from their root-sum-square instead of clipping the shell.
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
-    const half = Math.max(maxX - minX, maxY - minY) / 2 + MARGIN;
+    const baseHalf = Math.max(maxX - minX, maxY - minY) / 2 + MARGIN;
+    const combinedHalf = Math.sqrt(view.reduce((sum, item) => sum + item.r * item.r, 0)) + MARGIN;
+    const collapseHalf = THREE.MathUtils.lerp(baseHalf, Math.max(baseHalf, combinedHalf), collapseAmount);
+    const half = collapseTo ? collapseHalf : baseHalf;
 
     mc.position.set(cx, height - cy, 0);
     mc.scale.set(half, half, half);
@@ -298,7 +409,7 @@ vec2 fuseBallUv(vec3 p, vec3 c, float r) {
       // ball coords are 0..1 across the cube (local -1..1 after scaling)
       const bx = (v.x - (cx - half)) / (2 * half);
       const by = (height - v.y - (height - cy - half)) / (2 * half);
-      const bz = 0.5 + v.z;
+      const bz = 0.5 + v.z / (2 * half);
       const rNorm = v.r / (2 * half);
       const primaryStrength = 1 - v.trailAmount * TRAIL_PRIMARY_REDUCTION;
       mc.addBall(bx, by, bz, STRENGTH_SCALE * rNorm * rNorm * primaryStrength, SUBTRACT);
@@ -318,10 +429,11 @@ vec2 fuseBallUv(vec3 p, vec3 c, float r) {
       }
 
       // Mirror into the surface shader (world coords, y up)
-      ballUniforms.uPos.value[i].set(v.x, height - v.y, 2 * half * v.z);
+      ballUniforms.uPos.value[i].set(v.x, height - v.y, v.z);
       ballUniforms.uRad.value[i] = v.r;
       ballUniforms.uBallCol.value[i].copy(v.colorLin);
       ballUniforms.uHasTex.value[i] = v.tex ? 1 : 0;
+      ballUniforms.uTexAspect.value[i] = v.tex ? v.texAspect : 1;
       ballUniforms[`uTex${i}`].value = v.tex || placeholderTex;
     });
     mc.update();
