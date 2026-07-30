@@ -50,6 +50,15 @@
     <div id="drop-veil">Drop images to add them</div>
 
     <div id="blob-toolbar" hidden>
+      <div class="blob-role-select-wrap">
+        <select id="tb-role" class="blob-role-select" aria-label="Use ingredient as" title="Use ingredient as">
+          <option value="Content">Content</option>
+          <option value="Style">Style</option>
+          <option value="Behavior">Behavior</option>
+          <option value="Evidence">Evidence</option>
+          <option value="Constraint">Constraint</option>
+        </select>
+      </div>
       <button id="tb-grow" type="button" title="More influence" aria-label="More influence">+</button>
       <button id="tb-shrink" type="button" title="Less influence" aria-label="Less influence">−</button>
       <button id="tb-edit" type="button" title="Edit text" aria-label="Edit text">✎</button>
@@ -70,8 +79,15 @@
               aria-label="Add ingredient" aria-haspopup="menu" aria-expanded="false"
               aria-controls="add-menu">+</button>
       <div id="add-menu" class="composer-menu add-menu" role="menu" hidden>
-        <button id="add-text" type="button" role="menuitem"><span aria-hidden="true">T</span>Text</button>
-        <button id="add-image" type="button" role="menuitem"><span aria-hidden="true">▧</span>Image</button>
+        <button id="add-text" type="button" role="menuitem"><span class="add-menu-icon" aria-hidden="true">T</span>Text</button>
+        <button id="add-image" type="button" role="menuitem"><span class="add-menu-icon" aria-hidden="true">▧</span>Image</button>
+        <div class="add-menu-labs" role="group" aria-labelledby="add-menu-labs-label">
+          <div id="add-menu-labs-label" class="add-menu-section-label">
+            <span>Labs</span>
+            <span class="add-menu-experimental">Experimental</span>
+          </div>
+          <button id="add-github" type="button" role="menuitem"><span class="add-menu-icon" aria-hidden="true">⌘</span>GitHub repo</button>
+        </div>
       </div>
       <input id="file-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
     </div>
@@ -99,6 +115,66 @@
 
     <button id="fuse-btn" type="button" disabled>Fuse</button>
   </footer>
+
+  <dialog id="github-dialog" class="source-dialog" aria-labelledby="github-dialog-title">
+    <form method="dialog" class="source-dialog-shell">
+      <header class="source-dialog-head">
+        <div>
+          <span class="source-dialog-kicker">Labs · Experimental</span>
+          <h2 id="github-dialog-title">Add GitHub repository</h2>
+        </div>
+        <button id="github-dialog-close" class="source-dialog-close" value="cancel" aria-label="Close" title="Close">×</button>
+      </header>
+
+      <div class="source-dialog-body">
+        <label class="source-url-field" for="github-url">
+          <span>Repository URL</span>
+          <span class="source-url-row">
+            <input id="github-url" type="url" inputmode="url" autocomplete="url"
+                   placeholder="https://github.com/owner/repository" />
+            <button id="github-inspect" type="button">Inspect</button>
+          </span>
+        </label>
+
+        <div id="github-dialog-status" class="source-dialog-status" role="status" aria-live="polite"></div>
+
+        <section id="github-preview" class="source-preview" hidden>
+          <div class="source-preview-summary">
+            <div>
+              <span id="github-repo-meta" class="source-preview-meta"></span>
+              <h3 id="github-repo-name"></h3>
+              <p id="github-repo-description"></p>
+            </div>
+            <div class="source-preview-budget">
+              <strong id="github-token-estimate">0</strong>
+              <span>estimated tokens</span>
+            </div>
+          </div>
+
+          <div class="source-file-toolbar">
+            <span id="github-file-count"></span>
+            <label class="source-mode-field" for="github-mode">
+              <span>Use as</span>
+              <select id="github-mode">
+                <option value="behavior" selected>Behavior</option>
+                <option value="understand">Understand</option>
+                <option value="visual-system">Visual system</option>
+                <option value="propose-changes">Propose changes</option>
+              </select>
+            </label>
+            <button id="github-select-recommended" type="button">Recommended</button>
+            <button id="github-clear-files" type="button">Clear</button>
+          </div>
+          <div id="github-file-list" class="source-file-list" aria-label="Repository files"></div>
+        </section>
+      </div>
+
+      <footer class="source-dialog-actions">
+        <button value="cancel">Cancel</button>
+        <button id="github-add" type="button" class="source-dialog-primary" disabled>Add repository</button>
+      </footer>
+    </form>
+  </dialog>
 
   <section id="discover-panel" aria-labelledby="discover-title" hidden>
     <header class="discover-bar">

@@ -6,9 +6,10 @@ const MAX_ITEMS = 5;
 const DEFAULT_INFLUENCE = 100;
 const MIN_INFLUENCE = 1;
 const MAX_INFLUENCE = 100000;
+const INGREDIENT_ROLES = ["Content", "Style", "Behavior", "Evidence", "Constraint"];
 const PALETTE = ["#ff7ac3", "#7ae0ff", "#ffd166", "#8bffb0", "#c9a2ff"];
 
-let blobs = []; // {id, kind:'text'|'image', influence, text?, dataUrl?, mediaType?, name?, x, y, r, color}
+let blobs = []; // {id, kind, role, influence, x, y, r, color, source-specific data}
 let nextId = 1;
 let selectedId = null;
 let fusing = false;
@@ -31,6 +32,14 @@ const addMenu = document.getElementById("add-menu");
 const typeMenuTrigger = document.getElementById("type-menu-trigger");
 const typeMenu = document.getElementById("type-menu");
 const selectedTypeLabel = document.getElementById("selected-type-label");
+const roleSelect = document.getElementById("tb-role");
+const githubDialog = document.getElementById("github-dialog");
+const githubUrlInput = document.getElementById("github-url");
+const githubInspectButton = document.getElementById("github-inspect");
+const githubAddButton = document.getElementById("github-add");
+const githubPreview = document.getElementById("github-preview");
+const githubDialogStatus = document.getElementById("github-dialog-status");
+const githubFileList = document.getElementById("github-file-list");
 
 const resultPanel = document.getElementById("result-panel");
 const resultStatus = document.getElementById("result-status");
@@ -59,6 +68,7 @@ let resultImageReady = null;
 let activeDiscoverEntry = null;
 let shareableDiscoverEntry = null;
 let discoverItems = [];
+let githubInspection = null;
 const pendingDiscoverPreviews = new Map();
 let discoverPreviewCheckQueued = false;
 
@@ -335,6 +345,12 @@ function render() {
       span.style.fontSize = fontSizeFor(b.r) + "px";
       span.textContent = b.label || "fusion";
       el.appendChild(span);
+    } else if (b.kind === "repository") {
+      const span = document.createElement("span");
+      span.className = "blob-text blob-repository-label";
+      span.style.fontSize = fontSizeFor(b.r) + "px";
+      span.textContent = b.label || b.capsule?.title?.split("/").at(-1) || "repository";
+      el.appendChild(span);
     } else {
       const span = document.createElement("span");
       span.className = "blob-text";
@@ -372,11 +388,17 @@ function positionToolbar() {
     return;
   }
   toolbar.hidden = false;
+  b.role = ingredientRole(b);
+  roleSelect.value = b.role;
+  roleSelect.setAttribute("aria-label", `Use ingredient as ${b.role}`);
   const stageRect = stage.getBoundingClientRect();
   const topbarRect = document.querySelector(".topbar").getBoundingClientRect();
   const safeTop = topbarRect.bottom - stageRect.top + 8;
-  toolbar.style.left = b.x + "px";
-  toolbar.style.top = Math.max(safeTop, b.y - b.r - 46) + "px";
+  const safeHalfWidth = Math.max(90, toolbar.offsetWidth / 2);
+  const toolbarX = Math.min(stageRect.width - safeHalfWidth - 8, Math.max(safeHalfWidth + 8, b.x));
+  const toolbarTop = Math.max(safeTop, b.y - b.r - 46);
+  toolbar.style.left = toolbarX + "px";
+  toolbar.style.top = toolbarTop + "px";
   document.getElementById("tb-edit").style.display = b.kind === "text" ? "" : "none";
 }
 
@@ -422,12 +444,28 @@ function stageCenterSpot(r = 70) {
   return best;
 }
 
+function ingredientRole(ingredient) {
+  if (INGREDIENT_ROLES.includes(ingredient?.role)) return ingredient.role;
+  if (ingredient?.kind === "image") return "Style";
+  if (ingredient?.kind === "artifact") return "Behavior";
+  if (ingredient?.kind === "repository" && INGREDIENT_ROLES.includes(ingredient.capsule?.role)) {
+    return ingredient.capsule.role;
+  }
+  return "Content";
+}
+
 function addBlob(partial) {
   if (blobs.length >= MAX_ITEMS) {
     flashHint(`Max ${MAX_ITEMS} ingredients — remove one first.`);
     return null;
   }
-  const { r: _legacyRadius, influence: requestedInfluence, ...blobPartial } = partial;
+  const {
+    r: _legacyRadius,
+    influence: requestedInfluence,
+    role: requestedRole,
+    ...blobPartial
+  } = partial;
+  const role = ingredientRole({ ...blobPartial, role: requestedRole });
   const influence = requestedInfluence || (blobs.length
     ? blobs.reduce((sum, blob) => sum + blob.influence, 0) / blobs.length
     : DEFAULT_INFLUENCE);
@@ -441,6 +479,7 @@ function addBlob(partial) {
   };
   const b = {
     id: nextId++,
+    role,
     influence,
     r: radius,
     magneticAngle: Number.isFinite(blobPartial.magneticAngle)
@@ -586,6 +625,12 @@ function setupComposerMenu(trigger, menu) {
 }
 
 composerMenus.forEach(({ trigger, menu }) => setupComposerMenu(trigger, menu));
+roleSelect.addEventListener("change", () => {
+  const blob = blobs.find((item) => item.id === selectedId);
+  if (!blob || !INGREDIENT_ROLES.includes(roleSelect.value)) return;
+  blob.role = roleSelect.value;
+  render();
+});
 document.addEventListener("pointerdown", (e) => {
   if (!e.target.closest(".composer-menu-anchor")) closeComposerMenus();
 });
@@ -602,6 +647,159 @@ document.getElementById("add-text").addEventListener("click", () => {
 document.getElementById("add-image").addEventListener("click", () => {
   closeComposerMenus();
   fileInput.click();
+});
+
+function formatGithubFileSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function selectedGithubFiles() {
+  if (!githubInspection) return [];
+  const selectedPaths = new Set(
+    [...githubFileList.querySelectorAll('input[type="checkbox"]:checked')]
+      .map((input) => input.value)
+  );
+  return githubInspection.files.filter((file) => selectedPaths.has(file.path));
+}
+
+function updateGithubSelectionSummary() {
+  const selected = selectedGithubFiles();
+  const estimatedCharacters = selected.reduce((sum, file) => sum + Math.min(file.size, 8000), 0);
+  document.getElementById("github-file-count").textContent = `${selected.length} of ${githubInspection?.files.length || 0} files selected`;
+  document.getElementById("github-token-estimate").textContent = Math.ceil(estimatedCharacters / 4).toLocaleString();
+  githubAddButton.disabled = selected.length === 0;
+}
+
+function renderGithubInspection(inspection) {
+  githubInspection = inspection;
+  document.getElementById("github-repo-meta").textContent = [
+    inspection.repository.language,
+    inspection.repository.license,
+    inspection.assets.length ? `${inspection.assets.length} visual assets` : null,
+    inspection.repository.commitSha.slice(0, 7),
+  ].filter(Boolean).join(" · ");
+  document.getElementById("github-repo-name").textContent = inspection.repository.fullName;
+  document.getElementById("github-repo-description").textContent = inspection.repository.description || "Public GitHub repository";
+  githubFileList.replaceChildren(...inspection.files.map((file) => {
+    const label = document.createElement("label");
+    label.className = "source-file-option";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = file.path;
+    checkbox.checked = file.selected;
+    checkbox.dataset.recommended = String(file.selected);
+    checkbox.addEventListener("change", updateGithubSelectionSummary);
+    const path = document.createElement("span");
+    path.className = "source-file-path";
+    path.textContent = file.path;
+    path.title = file.path;
+    const size = document.createElement("span");
+    size.className = "source-file-size";
+    size.textContent = formatGithubFileSize(file.size);
+    label.append(checkbox, path, size);
+    return label;
+  }));
+  githubPreview.hidden = false;
+  const sourceStatus = inspection.rateLimit.cached
+    ? "cached GitHub snapshot"
+    : inspection.rateLimit.remaining
+      ? `${inspection.rateLimit.remaining} public GitHub requests remaining`
+      : "public GitHub snapshot";
+  githubDialogStatus.textContent = `Pinned to ${inspection.repository.commitSha.slice(0, 7)} · ${sourceStatus}`;
+  githubDialogStatus.classList.remove("error");
+  updateGithubSelectionSummary();
+}
+
+async function inspectGithubRepository() {
+  const url = githubUrlInput.value.trim();
+  githubInspectButton.disabled = true;
+  githubAddButton.disabled = true;
+  githubPreview.hidden = true;
+  githubDialogStatus.classList.remove("error");
+  githubDialogStatus.textContent = "Inspecting repository structure…";
+  try {
+    const response = await fetch("/api/github/inspect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "Repository inspection failed.");
+    renderGithubInspection(payload);
+  } catch (err) {
+    githubInspection = null;
+    githubDialogStatus.textContent = err.message;
+    githubDialogStatus.classList.add("error");
+  } finally {
+    githubInspectButton.disabled = false;
+  }
+}
+
+function openGithubDialog() {
+  closeComposerMenus();
+  if (blobs.length >= MAX_ITEMS) return flashHint(`Max ${MAX_ITEMS} ingredients — remove one first.`);
+  githubInspection = null;
+  githubPreview.hidden = true;
+  githubDialogStatus.textContent = "Paste a public repository root URL. Fuse will not clone or execute its code.";
+  githubDialogStatus.classList.remove("error");
+  githubAddButton.disabled = true;
+  githubDialog.showModal();
+  githubUrlInput.focus();
+}
+
+document.getElementById("add-github").addEventListener("click", openGithubDialog);
+githubInspectButton.addEventListener("click", inspectGithubRepository);
+githubUrlInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  inspectGithubRepository();
+});
+document.getElementById("github-select-recommended").addEventListener("click", () => {
+  githubFileList.querySelectorAll('input[type="checkbox"]').forEach((input) => {
+    input.checked = input.dataset.recommended === "true";
+  });
+  updateGithubSelectionSummary();
+});
+document.getElementById("github-clear-files").addEventListener("click", () => {
+  githubFileList.querySelectorAll('input[type="checkbox"]').forEach((input) => { input.checked = false; });
+  updateGithubSelectionSummary();
+});
+githubAddButton.addEventListener("click", async () => {
+  const selected = selectedGithubFiles();
+  if (!githubInspection || !selected.length) return;
+  githubAddButton.disabled = true;
+  githubInspectButton.disabled = true;
+  githubDialogStatus.classList.remove("error");
+  githubDialogStatus.textContent = "Creating commit-pinned repository ingredient…";
+  try {
+    const response = await fetch("/api/github/capsule", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url: githubInspection.repository.repositoryUrl,
+        commitSha: githubInspection.repository.commitSha,
+        paths: selected.map((file) => file.path),
+        mode: document.getElementById("github-mode").value,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "Repository capsule creation failed.");
+    addBlob({
+      kind: "repository",
+      capsule: payload.capsule,
+      label: payload.capsule.title.split("/").at(-1),
+      color: "#7ae0ff",
+    });
+    githubDialog.close();
+  } catch (err) {
+    githubDialogStatus.textContent = err.message;
+    githubDialogStatus.classList.add("error");
+  } finally {
+    githubInspectButton.disabled = false;
+    githubAddButton.disabled = selectedGithubFiles().length === 0;
+  }
 });
 fileInput.addEventListener("change", () => {
   addImageFiles([...fileInput.files]);
@@ -1179,13 +1377,17 @@ async function fuse() {
         imageBase64: base64,
         mediaType: meta.match(/data:(.*?);/)[1],
         name: b.name,
+        role: b.role,
         weightPct: w[b.id],
       };
     }
     if (b.kind === "artifact") {
-      return { kind: "artifact", html: b.html, label: b.label, weightPct: w[b.id] };
+      return { kind: "artifact", html: b.html, label: b.label, role: b.role, weightPct: w[b.id] };
     }
-    return { kind: "text", text: b.text, weightPct: w[b.id] };
+    if (b.kind === "repository") {
+      return { kind: "repository", capsule: b.capsule, role: b.role, weightPct: w[b.id] };
+    }
+    return { kind: "text", text: b.text, role: b.role, weightPct: w[b.id] };
   });
   openResultPanel(outputType === "image" ? "image" : "html");
   let raw = "";

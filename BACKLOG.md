@@ -147,7 +147,7 @@ Strengthen the frosted-glass treatment on the viewer title and action pills so a
 
 **Priority:** P1
 
-**Status:** Implemented; production verification pending
+**Status:** Done
 
 Social metadata and the `1200×630` PNG endpoint are healthy, but Azure cannot find any of the renderer's expected system fonts. Production therefore emits the bar-only fallback graphic, which appears as a broken or meaningless thumbnail in Microsoft Teams.
 
@@ -207,3 +207,285 @@ Ingredients already collapse into one gently moving metaball when fusion starts,
 - Auto mode hands image-bound generations from the metaball state into the `GEN-01` painting shimmer without an intermediate blank state.
 - WebGL-unavailable and `prefers-reduced-motion` users receive a stable, non-animated fallback with the same lifecycle.
 - The transition is verified on desktop and mobile without creating a second render loop or retaining the Stage3D loading state after handoff.
+
+## Input expansion
+
+### INPUT-00 — Define a universal ingredient capsule
+
+**Priority:** P0
+
+**Status:** Ready
+
+Normalize every new source into one model-facing contract instead of adding provider-specific branches throughout the client and prompt builder.
+
+#### INPUT-00 acceptance criteria
+
+- Every source adapter produces a capsule with `title`, `sourceType`, `role`, `summary`, `content`, `assets`, `provenance`, `freshness`, `permissions`, and `tokenEstimate`.
+- Capsules preserve useful structure rather than flattening everything into prose; headings, records, files, decisions, and components remain addressable.
+- The canvas renders all capsules through a shared ingredient UI with a source icon, label, influence, role, loading state, and inspection affordance.
+- The server composes model content from capsules through one budgeted path while retaining native image blocks for visual assets.
+- Per-source token and asset limits are explicit, deterministic, and visible before fusion.
+- Extraction failures remain local to the affected ingredient and never block editing or removing other ingredients.
+
+### INPUT-01 — Add ingredient roles alongside influence
+
+**Priority:** P0
+
+**Status:** Done
+
+Influence answers “how much?” Roles answer “in what way?” Support `Content`, `Style`, `Behavior`, `Evidence`, and `Constraint` without turning the canvas into prompt configuration.
+
+#### INPUT-01 acceptance criteria
+
+- Every ingredient has one optional role with a useful source-specific default.
+- Role is editable from a compact menu and remains visible without competing with the influence percentage.
+- The orchestration prompt explains role and influence independently and resolves conflicts predictably: constraints cannot be diluted by low influence, while style cannot override factual evidence.
+- Auto-role suggestions are inspectable and never silently change after the user edits them.
+- Role semantics are tested across text, image, artifact, and every new capsule source.
+
+### INPUT-02 — Build the connected-source permission boundary
+
+**Priority:** P0
+
+**Status:** Ready
+
+Connected sources introduce authorization, freshness, and data-boundary concerns that local uploads do not. Establish the shared trust layer before shipping Graph, GitHub, Figma, or live APIs.
+
+#### INPUT-02 acceptance criteria
+
+- Users explicitly authorize each connector and can see which identity, tenant, organization, repository, or workspace is active.
+- Fuse requests the minimum scopes required and never persists raw credentials in the browser or Discover artifacts.
+- Every capsule shows source provenance, retrieval time, and whether it is a snapshot or live reference.
+- Revoked or expired access degrades to a clear reconnect state without leaking previously inaccessible content.
+- Server logs, analytics, social cards, and generated artifacts never expose secrets or private source URLs.
+- Enterprise sources honor tenant boundaries, retention, audit, and sensitivity labels.
+
+### INPUT-03 — Ingest PDFs and Office documents
+
+**Priority:** P1
+
+**Status:** Ready
+
+Treat documents as structured evidence, content, or constraints rather than attaching an opaque file blob.
+
+#### INPUT-03 acceptance criteria
+
+- Support PDF, Word, and plain-text uploads with headings, paragraphs, tables, page references, and document metadata preserved.
+- Scanned PDFs use OCR and clearly identify OCR-derived text and confidence.
+- Users preview the extracted outline and choose the full document or selected sections before adding it to the canvas.
+- Citations in generated artifacts retain source title and page or section references.
+- Password-protected, malformed, or oversized files fail with specific recovery guidance.
+
+### INPUT-04 — Ingest websites and URLs
+
+**Priority:** P1
+
+**Status:** Ready
+
+Turn a URL into a bounded page snapshot containing meaningful content, structure, visual references, and provenance.
+
+#### INPUT-04 acceptance criteria
+
+- Fetch through a server-side reader with SSRF protection, redirect limits, MIME validation, and private-network blocking.
+- Extract title, canonical URL, headings, primary content, metadata, and selected representative images without importing ads or navigation noise.
+- Show a snapshot preview and retrieval timestamp before the page becomes an ingredient.
+- Let users choose whether the page contributes content, visual style, evidence, or comparison context.
+- Dynamic, authenticated, blocked, and paywalled pages return clear states rather than partial silent extraction.
+
+### INPUT-05A — Ingest a public GitHub repository in Labs
+
+**Priority:** P1
+
+**Status:** Done
+
+**Product position:** Experimental / Labs
+
+Represent a public repository as a structured system capsule, not a concatenated code dump. This first slice requires no user authentication and tests whether repository structure adds value beyond pasting a README or uploading an archive.
+
+#### INPUT-05A acceptance criteria
+
+- Add a GitHub option under a clearly labeled Labs / Experimental section of the ingredient menu that accepts only canonical public `https://github.com/{owner}/{repo}` URLs in the MVP.
+- A server-side inspect endpoint validates the host and repository path, resolves the default branch and immutable commit SHA, and retrieves public metadata without cloning or executing repository code.
+- Use GitHub's public repository, tree, contents, languages, and commit APIs with strict request, redirect, response-size, and timeout limits; never fetch arbitrary repository-supplied URLs.
+- Extract repository metadata, README and docs, language and dependency manifests, top-level architecture, selected source files, and UI assets. Issues and pull requests remain out of scope for the first slice.
+- Skip binaries, vendored dependencies, lockfile bodies, generated/build folders, large files, symlinks, submodules, and likely secrets by default.
+- Deterministic relevance ranking proposes a bounded file set and token estimate. Users inspect the tree, pin or exclude files, and see omission reasons before adding the repo.
+- The resulting capsule is pinned to the resolved commit SHA and preserves owner, repository, branch, file path, blob SHA, license, and retrieval time as provenance.
+- Default role is `Behavior`; users can choose `Understand`, `Use as behavior`, `Use as visual system`, or `Propose changes` before fusion.
+- Unauthenticated GitHub rate limits are cached and surfaced clearly. An optional server-only token may raise public API limits but never changes the user's repository permissions.
+- Private, missing, renamed, archived, empty, oversized, or API-truncated repositories return explicit states and recovery guidance.
+- The MVP is tested against small, monorepo, documentation-heavy, frontend, binary-heavy, and intentionally adversarial public repositories.
+
+### INPUT-05B — Connect private GitHub repositories
+
+**Priority:** P2
+
+**Status:** Ready
+
+**Depends on:** INPUT-02, INPUT-05A
+
+Extend the proven public-repository capsule through a repository-scoped GitHub App rather than broad OAuth scopes or user-provided personal access tokens.
+
+#### INPUT-05B acceptance criteria
+
+- Use a GitHub App with `Metadata: read` and `Contents: read`; issues and pull requests require separately approved optional permissions.
+- Users install or select the app only for repositories they intend to expose, and the repository picker is limited to approved installations.
+- Installation tokens are generated server-side, never sent to the browser, and refreshed before their approximately one-hour expiry.
+- Store installation and immutable repository IDs alongside owner/name so renamed or transferred repositories remain identifiable.
+- Handle organization approval, SAML SSO, enterprise policy, suspended installations, revoked access, and permission drift with explicit reconnect states.
+- Recheck repository access before refreshing or reusing a capsule; revoked private content cannot be silently retained as a live source.
+- Support GitHub Enterprise Server only through explicit host allowlisting, configurable API origins, trusted certificates, and separate app registration.
+- Private repository URLs, file contents, tokens, and installation metadata never appear in logs, social metadata, Discover cards, or generated artifacts unless explicitly included by the user.
+
+### INPUT-06 — Ingest Figma files and design systems
+
+**Priority:** P1
+
+**Status:** Ready
+
+Extract design intent as tokens, components, layout, copy, and selected rendered frames rather than treating Figma as one screenshot.
+
+#### INPUT-06 acceptance criteria
+
+- Connect to a Figma file and let users select pages, frames, components, or variables before import.
+- Capture component hierarchy, text, auto-layout, dimensions, variables, styles, and rendered previews with node provenance.
+- Distinguish `Style` use from `Content` or `Behavior` use so a visual reference does not silently copy its copy or interaction model.
+- Large files summarize the design system first and include only selected frames within budget.
+- Private-file permissions, missing fonts, unsupported nodes, and detached instances surface clearly.
+
+### INPUT-07 — Ingest spreadsheets and structured data
+
+**Priority:** P1
+
+**Status:** Ready
+
+Treat tables as typed records and measures so Fuse can create grounded reports, comparisons, calculators, and interactive visualizations.
+
+#### INPUT-07 acceptance criteria
+
+- Support CSV and Excel uploads with sheet selection, headers, types, formulas, ranges, and basic formatting preserved.
+- Profile row count, nulls, distributions, dates, units, and likely dimensions or measures before fusion.
+- Users choose a table or range and see a representative sample rather than sending an entire workbook blindly.
+- Generated artifacts remain grounded in supplied values and label any inferred or illustrative data explicitly.
+- Large datasets use deterministic aggregation or server-side queries instead of exceeding model context.
+
+### INPUT-08 — Ingest meetings, audio, and video
+
+**Priority:** P2
+
+**Status:** Ready
+
+Convert temporal media into a capsule of transcript, speakers, decisions, moments, and selected visual frames.
+
+#### INPUT-08 acceptance criteria
+
+- Accept meeting recordings and common audio/video uploads with transcription, speaker labels, chapters, and timestamps.
+- Extract decisions, action items, open questions, quotes, and key frames as distinct structured fields.
+- Users preview and trim time ranges before adding the source to the canvas.
+- Generated artifacts can deep-link citations to timestamps where the source system supports it.
+- Consent, recording policy, biometric/speaker identification, and retention boundaries are explicit.
+
+### INPUT-09 — Ingest email and Teams threads
+
+**Priority:** P2
+
+**Status:** Ready
+
+Preserve chronology, participants, decisions, and attachments while removing repetitive signatures and quoted-thread noise.
+
+#### INPUT-09 acceptance criteria
+
+- Users select a thread or bounded message range through Microsoft Graph rather than granting undirected mailbox access.
+- Extraction preserves sender, timestamp, recipients, reply structure, attachments, decisions, requests, and unresolved questions.
+- The preview distinguishes original messages from quoted content and identifies omitted sensitive or unsupported attachments.
+- Generated outputs cite individual messages without exposing addresses or private links unnecessarily.
+- Sensitivity labels, tenant policy, and revoked access remain enforceable after capsule creation.
+
+### INPUT-10 — Ingest presentations
+
+**Priority:** P2
+
+**Status:** Ready
+
+Treat decks as both narrative structure and visual material, with slide-level selection and speaker-note context.
+
+#### INPUT-10 acceptance criteria
+
+- Support PowerPoint and PDF decks with slide order, titles, text, notes, charts, images, and rendered slide previews preserved.
+- Users select slides and choose whether the deck contributes story structure, content, or visual style.
+- Fuse can revise, compare, summarize, or extend a narrative without flattening the deck into one text transcript.
+- Generated artifacts retain slide-level provenance for claims and reused visuals.
+- Hidden slides, master layouts, and confidential notes are visibly included or excluded.
+
+### INPUT-11 — Connect live APIs and queryable data
+
+**Priority:** P2
+
+**Status:** Ready
+
+Let a capsule reference live state safely when a static snapshot would become stale, while keeping generated artifacts deterministic and auditable.
+
+#### INPUT-11 acceptance criteria
+
+- Configure approved read-only endpoints through a server connector with allowlisted hosts, methods, schemas, and secret storage.
+- Preview sample responses, inferred schema, freshness, and expected request cost before adding the source.
+- Users choose snapshot-at-fusion or live-at-view behavior explicitly.
+- Live artifacts include loading, empty, error, and stale states and never expose connector credentials client-side.
+- Responses are size-limited, cached, rate-limited, and logged with source provenance.
+
+### INPUT-12 — Build Work IQ context bundles
+
+**Priority:** P2
+
+**Status:** Ready
+
+Create a bounded project ingredient from related Microsoft 365 context rather than making users add every file, meeting, and thread separately.
+
+#### INPUT-12 acceptance criteria
+
+- Users start from a project, meeting, person, or date range and review the proposed files, messages, meetings, and decisions.
+- The bundle explains why each item was included and supports removal before becoming one capsule.
+- Retrieval uses Work IQ and Graph signals without allowing hidden context to influence outputs silently.
+- Freshness and permissions are reevaluated when a bundle is reused.
+- The model receives a structured timeline and relationship map, not an undifferentiated content dump.
+
+### INPUT-13 — Add audience and persona ingredients
+
+**Priority:** P2
+
+**Status:** Ready
+
+Represent the intended reader or user as an explicit constraint capsule covering needs, vocabulary, accessibility, and decision context.
+
+#### INPUT-13 acceptance criteria
+
+- Users can define an audience manually or derive one from an authorized profile or research source.
+- Audience capsules separate observed evidence from inferred traits and never invent sensitive attributes.
+- The capsule can constrain reading level, terminology, accessibility, tone, information density, and calls to action.
+- Role defaults to `Constraint`; influence controls emphasis but cannot weaken required accessibility needs.
+- Generated artifacts show which audience assumptions shaped the result and allow them to be edited or removed.
+
+### INPUT-14 — Evaluate combination quality across sources
+
+**Priority:** P1
+
+**Status:** Ready
+
+Prove that structured capsules and roles improve synthesis before expanding connector breadth.
+
+#### INPUT-14 acceptance criteria
+
+- Build a benchmark of representative combinations: repo + Figma + brief, meeting + deck + spreadsheet, feedback + telemetry + roadmap, and policy + UI + region.
+- Compare capsule-based fusion against attachments plus a plain prompt for completeness, grounding, controllability, and output usefulness.
+- Measure ingredient omission, citation accuracy, role obedience, latency, token cost, and user correction effort.
+- Include adversarial cases with conflicting evidence, stale sources, inaccessible content, and prompt injection inside connected sources.
+- Connector rollout pauses if structured ingestion does not outperform the simpler baseline.
+
+### Input delivery sequence
+
+1. **Foundation:** `INPUT-00`, `INPUT-01`, and `INPUT-02` establish the capsule contract, role grammar, and permission boundary.
+2. **Local structured inputs:** `INPUT-03`, `INPUT-07`, and `INPUT-10` prove document, data, and narrative extraction without connector complexity.
+3. **Referenced systems:** `INPUT-04`, `INPUT-05A`, and `INPUT-06` add web, public code, and design sources through the shared capsule path.
+4. **Quality gate:** Run `INPUT-14` once at least one document, one structured-data, and one system source are functional. Do not expand connector breadth until the capsule approach beats plain attachments.
+5. **Temporal and human context:** `INPUT-08` and `INPUT-13` add time-based media and explicit audience constraints.
+6. **Connected enterprise context:** `INPUT-05B`, `INPUT-09`, `INPUT-11`, and `INPUT-12` follow only after permission, provenance, retention, and prompt-injection controls are verified.
