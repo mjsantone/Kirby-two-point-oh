@@ -60,4 +60,6 @@ jobs:
           app-name: 'fuse-catterson'
           slot-name: 'Production'
           package: .
-          
+
+      - name: Restart Azure Web App worker
+        run: az webapp restart --name fuse-catterson --resource-group fuse-rg
