@@ -27,12 +27,19 @@ const textEntryInput = document.getElementById("text-entry-input");
 const fuseBtn = document.getElementById("fuse-btn");
 const directiveInput = document.getElementById("directive");
 const fileInput = document.getElementById("file-input");
+const pdfFileInput = document.getElementById("pdf-file-input");
 const addMenuTrigger = document.getElementById("add-menu-trigger");
 const addMenu = document.getElementById("add-menu");
 const typeMenuTrigger = document.getElementById("type-menu-trigger");
 const typeMenu = document.getElementById("type-menu");
 const selectedTypeLabel = document.getElementById("selected-type-label");
 const roleSelect = document.getElementById("tb-role");
+const pdfDialog = document.getElementById("pdf-dialog");
+const pdfChooseButton = document.getElementById("pdf-choose");
+const pdfAddButton = document.getElementById("pdf-add");
+const pdfPreview = document.getElementById("pdf-preview");
+const pdfDialogStatus = document.getElementById("pdf-dialog-status");
+const pdfPageList = document.getElementById("pdf-page-list");
 const githubDialog = document.getElementById("github-dialog");
 const githubUrlInput = document.getElementById("github-url");
 const githubInspectButton = document.getElementById("github-inspect");
@@ -69,6 +76,7 @@ let activeDiscoverEntry = null;
 let shareableDiscoverEntry = null;
 let discoverItems = [];
 let githubInspection = null;
+let pdfInspection = null;
 const pendingDiscoverPreviews = new Map();
 let discoverPreviewCheckQueued = false;
 
@@ -345,6 +353,12 @@ function render() {
       span.style.fontSize = fontSizeFor(b.r) + "px";
       span.textContent = b.label || "fusion";
       el.appendChild(span);
+    } else if (b.kind === "document") {
+      const span = document.createElement("span");
+      span.className = "blob-text blob-document-label";
+      span.style.fontSize = fontSizeFor(b.r) + "px";
+      span.textContent = b.label || b.capsule?.title || "document";
+      el.appendChild(span);
     } else if (b.kind === "repository") {
       const span = document.createElement("span");
       span.className = "blob-text blob-repository-label";
@@ -449,6 +463,9 @@ function ingredientRole(ingredient) {
   if (ingredient?.kind === "image") return "Style";
   if (ingredient?.kind === "artifact") return "Behavior";
   if (ingredient?.kind === "repository" && INGREDIENT_ROLES.includes(ingredient.capsule?.role)) {
+    return ingredient.capsule.role;
+  }
+  if (ingredient?.kind === "document" && INGREDIENT_ROLES.includes(ingredient.capsule?.role)) {
     return ingredient.capsule.role;
   }
   return "Content";
@@ -647,6 +664,172 @@ document.getElementById("add-text").addEventListener("click", () => {
 document.getElementById("add-image").addEventListener("click", () => {
   closeComposerMenus();
   fileInput.click();
+});
+
+/* ---------------- PDF documents ---------------- */
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+    reader.onerror = () => reject(new Error("Couldn't read that PDF."));
+    reader.readAsDataURL(file);
+  });
+}
+
+function selectedPdfPages() {
+  if (!pdfInspection) return [];
+  const selectedNumbers = new Set(
+    [...pdfPageList.querySelectorAll('input[type="checkbox"]:checked')].map((input) => Number(input.value))
+  );
+  return pdfInspection.pages.filter((page) => selectedNumbers.has(page.pageNumber));
+}
+
+function updatePdfSelectionSummary() {
+  const selected = selectedPdfPages();
+  const estimatedCharacters = Math.min(
+    pdfInspection?.budget.maxCharacters || 50000,
+    selected.reduce((sum, page) => sum + Math.min(page.charCount, pdfInspection?.budget.maxPageCharacters || 12000) + 80, 0)
+  );
+  document.getElementById("pdf-page-count").textContent = `${selected.length} of ${pdfInspection?.pages.length || 0} pages selected`;
+  document.getElementById("pdf-token-estimate").textContent = Math.ceil(estimatedCharacters / 4).toLocaleString();
+  pdfAddButton.disabled = selected.length === 0;
+}
+
+function renderPdfInspection(inspection) {
+  pdfInspection = inspection;
+  document.getElementById("pdf-document-meta").textContent = [
+    `${inspection.document.pageCount} page${inspection.document.pageCount === 1 ? "" : "s"}`,
+    formatGithubFileSize(inspection.document.fileSize),
+    inspection.document.author || null,
+  ].filter(Boolean).join(" · ");
+  document.getElementById("pdf-document-title").textContent = inspection.document.title;
+  document.getElementById("pdf-document-description").textContent = `${inspection.document.fileName} · page references will be preserved for citations`;
+  pdfPageList.replaceChildren(...inspection.pages.map((page) => {
+    const label = document.createElement("label");
+    label.className = "source-page-option";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = String(page.pageNumber);
+    checkbox.checked = page.selected;
+    checkbox.addEventListener("change", updatePdfSelectionSummary);
+    const copy = document.createElement("span");
+    copy.className = "source-page-copy";
+    const title = document.createElement("strong");
+    title.textContent = page.label;
+    const excerpt = document.createElement("span");
+    excerpt.textContent = page.excerpt || "No readable text on this page";
+    copy.append(title, excerpt);
+    const number = document.createElement("span");
+    number.className = "source-page-number";
+    number.textContent = `p. ${page.pageNumber}`;
+    label.append(checkbox, copy, number);
+    return label;
+  }));
+  pdfPreview.hidden = false;
+  pdfDialogStatus.textContent = "Snapshot ready · choose the pages Fuse should use.";
+  pdfDialogStatus.classList.remove("error");
+  updatePdfSelectionSummary();
+}
+
+async function inspectPdfFile(file) {
+  if (!file) return;
+  if (file.type && file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
+    flashHint("Choose a PDF file.");
+    return;
+  }
+  closeComposerMenus();
+  pdfInspection = null;
+  pdfPreview.hidden = true;
+  pdfAddButton.disabled = true;
+  document.getElementById("pdf-file-name").textContent = file.name;
+  pdfDialogStatus.classList.remove("error");
+  pdfDialogStatus.textContent = "Extracting pages and document metadata…";
+  if (!pdfDialog.open) pdfDialog.showModal();
+  try {
+    if (file.size > 12 * 1024 * 1024) throw new Error("PDFs must be 12 MB or smaller.");
+    const dataBase64 = await fileToBase64(file);
+    const response = await fetch("/api/pdf/inspect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fileName: file.name, mediaType: file.type || "application/pdf", dataBase64 }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "PDF inspection failed.");
+    renderPdfInspection(payload);
+  } catch (err) {
+    pdfInspection = null;
+    pdfDialogStatus.textContent = err.message;
+    pdfDialogStatus.classList.add("error");
+    pdfDialogStatus.tabIndex = -1;
+    pdfDialogStatus.focus();
+  }
+}
+
+document.getElementById("add-pdf").addEventListener("click", () => {
+  closeComposerMenus();
+  if (blobs.length >= MAX_ITEMS) return flashHint(`Max ${MAX_ITEMS} ingredients — remove one first.`);
+  pdfFileInput.click();
+});
+pdfChooseButton.addEventListener("click", () => pdfFileInput.click());
+pdfFileInput.addEventListener("change", () => {
+  const [file] = pdfFileInput.files;
+  pdfFileInput.value = "";
+  inspectPdfFile(file);
+});
+document.getElementById("pdf-select-all").addEventListener("click", () => {
+  pdfPageList.querySelectorAll('input[type="checkbox"]').forEach((input) => { input.checked = true; });
+  updatePdfSelectionSummary();
+});
+document.getElementById("pdf-clear-pages").addEventListener("click", () => {
+  pdfPageList.querySelectorAll('input[type="checkbox"]').forEach((input) => { input.checked = false; });
+  updatePdfSelectionSummary();
+});
+pdfAddButton.addEventListener("click", async () => {
+  const selected = selectedPdfPages();
+  if (!pdfInspection || !selected.length) return;
+  pdfAddButton.disabled = true;
+  pdfChooseButton.disabled = true;
+  pdfDialogStatus.classList.remove("error");
+  pdfDialogStatus.textContent = "Creating page-cited document ingredient…";
+  try {
+    const response = await fetch("/api/pdf/capsule", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        inspectionId: pdfInspection.inspectionId,
+        pages: selected.map((page) => page.pageNumber),
+        role: document.getElementById("pdf-role").value,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "PDF capsule creation failed.");
+    if (
+      payload.capsule?.sourceType !== "pdf-document"
+      || typeof payload.capsule.title !== "string"
+      || typeof payload.capsule.content !== "string"
+      || payload.capsule.content.length < 1
+      || payload.capsule.content.length > (pdfInspection.budget.maxCharacters || 50000)
+      || !["Content", "Evidence", "Constraint"].includes(payload.capsule.role)
+      || !Array.isArray(payload.capsule.provenance?.pages)
+      || !payload.capsule.provenance.pages.length
+    ) {
+      throw new Error("The server returned an invalid PDF snapshot.");
+    }
+    addBlob({
+      kind: "document",
+      capsule: payload.capsule,
+      label: payload.capsule.title,
+      color: "#ffd166",
+    });
+    pdfDialog.close();
+  } catch (err) {
+    pdfDialogStatus.textContent = err.message;
+    pdfDialogStatus.classList.add("error");
+  } finally {
+    pdfChooseButton.disabled = false;
+    pdfAddButton.disabled = selectedPdfPages().length === 0;
+  }
 });
 
 function formatGithubFileSize(bytes) {
@@ -1386,6 +1569,9 @@ async function fuse() {
     }
     if (b.kind === "repository") {
       return { kind: "repository", capsule: b.capsule, role: b.role, weightPct: w[b.id] };
+    }
+    if (b.kind === "document") {
+      return { kind: "document", capsule: b.capsule, role: b.role, weightPct: w[b.id] };
     }
     return { kind: "text", text: b.text, role: b.role, weightPct: w[b.id] };
   });

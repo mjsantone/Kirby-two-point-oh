@@ -264,7 +264,9 @@ Connected sources introduce authorization, freshness, and data-boundary concerns
 
 **Priority:** P1
 
-**Status:** Ready
+**Status:** In progress
+
+**Delivered:** Text-based PDF upload, page-level preview and selection, Content/Evidence/Constraint roles, bounded snapshots, provenance, and page citation instructions. OCR, Word documents, and table-aware extraction remain.
 
 Treat documents as structured evidence, content, or constraints rather than attaching an opaque file blob.
 

@@ -1,21 +1,24 @@
 {
   "name": "fuse-metaball-canvas",
   "version": "0.1.0",
-  "description": "Drop up to 5 ingredients (text or images) onto a gooey metaball canvas, size them for influence, and fuse them into an interactive HTML artifact with Claude.",
+  "description": "Drop up to 5 text, image, PDF, or prior-artifact ingredients onto a gooey metaball canvas and fuse them into an interactive HTML artifact with Claude.",
   "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "test": "node --test"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.13"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
     "@azure/storage-blob": "12.27.0",
+    "@napi-rs/canvas": "^1.0.3",
     "express": "^4.21.2",
     "open-sans-fonts": "1.6.2",
+    "pdfjs-dist": "^6.2.108",
     "pureimage": "^0.4.20",
     "three": "^0.185.1"
   },

@@ -1139,6 +1139,14 @@ body.result-revealing #hint {
   font-size: 0.72em;
   opacity: 0.76;
 }
+.blob-document-label { display: block; }
+.blob-document-label::before {
+  content: "▤";
+  display: block;
+  margin-bottom: 3px;
+  font-size: 1em;
+  opacity: 0.84;
+}
 
 /* ---------- Connected source inspector ---------- */
 
@@ -1225,6 +1233,7 @@ body.result-revealing #hint {
   background: var(--gnrc-color-background-neutral-subtle);
 }
 .source-url-row button,
+.source-upload-row button,
 .source-dialog-actions button,
 .source-file-toolbar button {
   min-height: 36px;
@@ -1237,7 +1246,24 @@ body.result-revealing #hint {
 }
 .source-url-row button { min-height: 42px; }
 .source-url-row button:disabled,
+.source-upload-row button:disabled,
 .source-dialog-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+.source-upload-row {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.source-upload-row > div { min-width: 0; }
+.source-upload-row strong {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .source-dialog-status {
   min-height: 20px;
   margin-top: 10px;
@@ -1325,6 +1351,41 @@ body.result-revealing #hint {
   white-space: nowrap;
 }
 .source-file-size { color: var(--gnrc-color-foreground-neutral-tertiary); font-size: 11px; }
+.source-page-option {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 62px;
+  padding: 9px 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+}
+.source-page-option:last-child { border-bottom: 0; }
+.source-page-option:hover { background: rgba(255, 255, 255, 0.035); }
+.source-page-option input { width: 16px; height: 16px; margin: 0; }
+.source-page-copy { min-width: 0; }
+.source-page-copy strong,
+.source-page-copy span { display: block; }
+.source-page-copy strong {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-page-copy span {
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--gnrc-color-foreground-neutral-tertiary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-page-number {
+  color: var(--gnrc-color-foreground-neutral-tertiary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
 .source-dialog-primary {
   border-color: #fff !important;
   color: #171717 !important;

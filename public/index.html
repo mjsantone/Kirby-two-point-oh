@@ -44,7 +44,7 @@
 
     <div id="empty-state">
       <p>No ingredients yet</p>
-      <p>Add text or an image below to begin.</p>
+        <p>Add text, an image, or a PDF below to begin.</p>
     </div>
 
     <div id="drop-veil">Drop images to add them</div>
@@ -81,6 +81,7 @@
       <div id="add-menu" class="composer-menu add-menu" role="menu" hidden>
         <button id="add-text" type="button" role="menuitem"><span class="add-menu-icon" aria-hidden="true">T</span>Text</button>
         <button id="add-image" type="button" role="menuitem"><span class="add-menu-icon" aria-hidden="true">▧</span>Image</button>
+        <button id="add-pdf" type="button" role="menuitem"><span class="add-menu-icon" aria-hidden="true">▤</span>PDF</button>
         <div class="add-menu-labs" role="group" aria-labelledby="add-menu-labs-label">
           <div id="add-menu-labs-label" class="add-menu-section-label">
             <span>Labs</span>
@@ -90,6 +91,7 @@
         </div>
       </div>
       <input id="file-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
+      <input id="pdf-file-input" type="file" accept="application/pdf,.pdf" hidden />
     </div>
 
     <input id="directive" type="text" maxlength="500" autocomplete="off"
@@ -115,6 +117,64 @@
 
     <button id="fuse-btn" type="button" disabled>Fuse</button>
   </footer>
+
+  <dialog id="pdf-dialog" class="source-dialog" aria-labelledby="pdf-dialog-title">
+    <form method="dialog" class="source-dialog-shell">
+      <header class="source-dialog-head">
+        <div>
+          <span class="source-dialog-kicker">Document</span>
+          <h2 id="pdf-dialog-title">Add PDF</h2>
+        </div>
+        <button class="source-dialog-close" value="cancel" aria-label="Close" title="Close">×</button>
+      </header>
+
+      <div class="source-dialog-body">
+        <div class="source-upload-row">
+          <div>
+            <span class="source-preview-meta">Selected file</span>
+            <strong id="pdf-file-name">No PDF selected</strong>
+          </div>
+          <button id="pdf-choose" type="button">Choose another</button>
+        </div>
+
+        <div id="pdf-dialog-status" class="source-dialog-status" role="status" aria-live="polite"></div>
+
+        <section id="pdf-preview" class="source-preview" hidden>
+          <div class="source-preview-summary">
+            <div>
+              <span id="pdf-document-meta" class="source-preview-meta"></span>
+              <h3 id="pdf-document-title"></h3>
+              <p id="pdf-document-description"></p>
+            </div>
+            <div class="source-preview-budget">
+              <strong id="pdf-token-estimate">0</strong>
+              <span>estimated tokens</span>
+            </div>
+          </div>
+
+          <div class="source-file-toolbar">
+            <span id="pdf-page-count" role="status" aria-live="polite" aria-atomic="true"></span>
+            <label class="source-mode-field" for="pdf-role">
+              <span>Use as</span>
+              <select id="pdf-role">
+                <option value="Evidence" selected>Evidence</option>
+                <option value="Content">Content</option>
+                <option value="Constraint">Constraint</option>
+              </select>
+            </label>
+            <button id="pdf-select-all" type="button">All pages</button>
+            <button id="pdf-clear-pages" type="button">Clear</button>
+          </div>
+          <div id="pdf-page-list" class="source-file-list source-page-list" aria-label="PDF pages"></div>
+        </section>
+      </div>
+
+      <footer class="source-dialog-actions">
+        <button value="cancel">Cancel</button>
+        <button id="pdf-add" type="button" class="source-dialog-primary" disabled>Add document</button>
+      </footer>
+    </form>
+  </dialog>
 
   <dialog id="github-dialog" class="source-dialog" aria-labelledby="github-dialog-title">
     <form method="dialog" class="source-dialog-shell">
